@@ -1,0 +1,10 @@
+{
+  "name": "teams-cli",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Playwright automation for Microsoft Teams",
+  "dependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}
