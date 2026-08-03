@@ -1,38 +1,44 @@
 import { chromium } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { createInterface } from 'node:readline/promises';
 
 // Usage:
 //   nix develop .#playwright --command node manual-login.mjs
 //
-// Opens Teams in a visible browser so you can log in manually (including MFA).
-// An existing session at $TEAMS_AUTH (default ".auth/user.json") is loaded if
-// present, so you may only need to refresh it. When you're done, return to this
-// terminal and press Enter — the session is saved back to the same path used by
-// post-message.mjs.
+// Opens Teams in a visible browser using a persistent profile at
+// $TEAMS_PROFILE (default ".profile") for localStorage/cache. Because a
+// persistent profile drops session cookies when reopened (and this tenant does
+// not offer "Stay signed in?"), the auth cookies are also snapshotted to a
+// storageState file at $TEAMS_AUTH (default ".auth/user.json") while the browser
+// is open — the last snapshot before you close wins.
+//
+// Log in manually (including MFA), then simply close the browser window.
 
+const PROFILE_DIR = process.env.TEAMS_PROFILE || '.profile';
 const AUTH_PATH = process.env.TEAMS_AUTH || '.auth/user.json';
 
-const browser = await chromium.launch({ headless: false });
-const context = await browser.newContext({
-  storageState: existsSync(AUTH_PATH) ? AUTH_PATH : undefined,
+await mkdir(dirname(AUTH_PATH), { recursive: true });
+
+const context = await chromium.launchPersistentContext(PROFILE_DIR, {
+  headless: false,
   viewport: { width: 1400, height: 900 },
 });
-const page = await context.newPage();
+const page = context.pages()[0] ?? await context.newPage();
 
-try {
-  console.log('Opening Teams — log in manually in the browser window that just opened.');
-  await page.goto('https://teams.microsoft.com/v2/', { waitUntil: 'domcontentloaded', timeout: 120000 });
+let closed = false;
+context.on('close', () => { closed = true; });
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  await rl.question('\nWhen you have finished logging in, press Enter here to save the session... ');
-  rl.close();
+console.log('Opening Teams — log in manually, then close the browser window when you are done.');
+await page.goto('https://teams.microsoft.com/v2/', { waitUntil: 'domcontentloaded', timeout: 120000 });
 
-  await mkdir(dirname(AUTH_PATH), { recursive: true });
-  await context.storageState({ path: AUTH_PATH });
-  console.log(`Session saved to ${AUTH_PATH}`);
-} finally {
-  await browser.close();
+// Snapshot cookies to the storageState file until the browser is closed.
+while (!closed) {
+  await new Promise((r) => setTimeout(r, 3000));
+  try {
+    await context.storageState({ path: AUTH_PATH });
+  } catch {
+    break; // context is closing/closed
+  }
 }
+
+console.log(`Session saved to profile "${PROFILE_DIR}" and cookies to "${AUTH_PATH}".`);

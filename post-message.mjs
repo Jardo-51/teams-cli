@@ -1,4 +1,5 @@
 import { chromium } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 
 // Usage:
 //   nix develop .#playwright --command node post-message.mjs "<chat name>" "<message>" [--dry-run]
@@ -7,9 +8,13 @@ import { chromium } from '@playwright/test';
 // With --dry-run the message is typed into the compose box but NOT sent,
 // so you can confirm the correct chat is targeted before anything goes out.
 //
-// The auth session (Playwright storageState) is read from $TEAMS_AUTH,
-// defaulting to ".auth/user.json" relative to the current directory.
+// The browser profile (localStorage, cache) is a persistent directory at
+// $TEAMS_PROFILE (default ".profile"). Persistent profiles drop session cookies
+// on reopen, so auth cookies are additionally loaded from the storageState file
+// at $TEAMS_AUTH (default ".auth/user.json"). Both are created/refreshed by
+// manual-login.mjs.
 
+const PROFILE_DIR = process.env.TEAMS_PROFILE || '.profile';
 const AUTH_PATH = process.env.TEAMS_AUTH || '.auth/user.json';
 
 const args = process.argv.slice(2);
@@ -22,12 +27,33 @@ if (!chatName || !message) {
   process.exit(1);
 }
 
-const browser = await chromium.launch({ headless: true });
-const context = await browser.newContext({
-  storageState: AUTH_PATH,
+const context = await chromium.launchPersistentContext(PROFILE_DIR, {
+  headless: true,
   viewport: { width: 1400, height: 900 },
 });
-const page = await context.newPage();
+
+// Persistent profiles drop session cookies on reopen (and this tenant has no
+// "Stay signed in?"), so restore the full auth state — cookies plus per-origin
+// localStorage, where MSAL keeps its tokens — from the storageState file. The
+// profile itself still provides cache/warm-start.
+try {
+  const state = JSON.parse(await readFile(AUTH_PATH, 'utf8'));
+  if (state.cookies?.length) await context.addCookies(state.cookies);
+  for (const { origin, localStorage } of state.origins ?? []) {
+    if (!localStorage?.length) continue;
+    await context.addInitScript((data) => {
+      if (location.origin === data.origin) {
+        for (const { name, value } of data.items) {
+          try { window.localStorage.setItem(name, value); } catch {}
+        }
+      }
+    }, { origin, items: localStorage });
+  }
+} catch {
+  console.log(`No saved session at "${AUTH_PATH}" — run manual-login.mjs first.`);
+}
+
+const page = context.pages()[0] ?? await context.newPage();
 
 try {
   console.log('Opening Teams...');
@@ -74,7 +100,7 @@ try {
     console.log(`Sent to "${resolvedName}".`);
   }
 } finally {
-  await browser.close();
+  await context.close();
 }
 
 function escapeRegExp(s) {
