@@ -62,6 +62,14 @@ nix develop .#playwright --command node read-chat-messages.mjs "<chat name>" "<p
 nix develop .#playwright --command node read-chat-messages.mjs "Developers" "2d" messages.json
 ```
 
+Add `--without-reactions-only` to keep just the messages nobody has reacted to
+— handy for spotting requests that went unacknowledged. It also runs faster,
+since the reaction authors then never have to be read:
+
+```bash
+nix develop .#playwright --command node read-chat-messages.mjs "Developers" "2d" messages.json --without-reactions-only
+```
+
 The chat history is scrolled back until the start of the period is reached, so
 longer periods take longer to read. Each message is written as:
 

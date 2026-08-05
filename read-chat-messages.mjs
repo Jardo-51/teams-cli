@@ -3,13 +3,16 @@ import { dirname } from 'node:path';
 import { openTeams, waitForChatList, openChat } from './teams.mjs';
 
 // Usage:
-//   nix develop .#playwright --command node read-chat-messages.mjs "<chat name>" "<period>" "<output file>"
+//   nix develop .#playwright --command node read-chat-messages.mjs "<chat name>" "<period>" "<output file>" [--without-reactions-only]
 //
 // Reads the recent messages of the Teams chat whose name matches <chat name>
 // and writes them to <output file> as JSON.
 //
 // <period> is a relative time span ending "now": "<number><unit>" where unit is
 // m (minutes), h (hours) or d (days) — e.g. "10m", "6h", "2d".
+//
+// With --without-reactions-only the output is limited to the messages that
+// nobody has reacted to.
 //
 // Reading is done through the Teams UI, so it only ever hovers and scrolls;
 // it never clicks a reaction pill (clicking one would toggle your own
@@ -22,11 +25,18 @@ const MAX_SCROLL_STEPS = 60;
 // conversation has been reached.
 const MAX_STAGNANT_SCROLLS = 3;
 
-const [chatName, period, outputFile] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const withoutReactionsOnly = args.includes('--without-reactions-only');
+const [chatName, period, outputFile] = args.filter(a => !a.startsWith('-'));
 
-if (!chatName || !period || !outputFile) {
-  console.log('Usage: node read-chat-messages.mjs "<chat name>" "<period>" "<output file>"');
-  console.log('  <period> e.g. "10m" (minutes), "6h" (hours), "2d" (days)');
+// Catch a mistyped flag instead of silently reading it as the chat name.
+const unknownFlag = args.find(a => a.startsWith('-') && a !== '--without-reactions-only');
+
+if (!chatName || !period || !outputFile || unknownFlag) {
+  if (unknownFlag) console.log(`Unknown option "${unknownFlag}".`);
+  console.log('Usage: node read-chat-messages.mjs "<chat name>" "<period>" "<output file>" [--without-reactions-only]');
+  console.log('  <period>                   e.g. "10m" (minutes), "6h" (hours), "2d" (days)');
+  console.log('  --without-reactions-only   only messages that nobody reacted to');
   process.exit(1);
 }
 
@@ -95,13 +105,19 @@ try {
   const inRange = all.filter(m => Date.parse(m.time) >= cutoff);
   console.log(`${inRange.length} message(s) in the last ${period}.`);
 
+  // Whether a message has any reaction is already visible on the message
+  // itself, so filtering happens before the reaction authors are read — with
+  // the flag, nothing selected has reactions and the pass below is skipped.
+  const selected = withoutReactionsOnly ? inRange.filter(m => !m.hasReactions) : inRange;
+  if (withoutReactionsOnly) console.log(`${selected.length} of them without reactions.`);
+
   // Reactions are only in the DOM while the pill's flyout is open. Hovering
   // opens it; clicking would toggle our own reaction, so we never click.
-  const withReactions = inRange.filter(m => m.hasReactions).length;
+  const withReactions = selected.filter(m => m.hasReactions).length;
   if (withReactions) console.log(`Reading reactions for ${withReactions} message(s)...`);
 
   const messages = [];
-  for (const m of inRange) {
+  for (const m of selected) {
     const { hasReactions, ...rest } = m;
     messages.push({ ...rest, reactions: hasReactions ? await readReactions(page, m.id) : [] });
   }
