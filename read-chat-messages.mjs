@@ -1,6 +1,6 @@
-import { chromium } from '@playwright/test';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { openTeams, waitForChatList, openChat } from './teams.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node read-chat-messages.mjs "<chat name>" "<period>" "<output file>"
@@ -15,15 +15,6 @@ import { dirname } from 'node:path';
 // it never clicks a reaction pill (clicking one would toggle your own
 // reaction). Note that opening a chat marks its messages as read, which is
 // inherent to reading them through the web client.
-//
-// The browser profile (localStorage, cache) is a persistent directory at
-// $TEAMS_PROFILE (default ".profile"). Persistent profiles drop session cookies
-// on reopen, so auth cookies are additionally loaded from the storageState file
-// at $TEAMS_AUTH (default ".auth/user.json"). Both are created/refreshed by
-// manual-login.mjs.
-
-const PROFILE_DIR = process.env.TEAMS_PROFILE || '.profile';
-const AUTH_PATH = process.env.TEAMS_AUTH || '.auth/user.json';
 
 // How far back the pane is scrolled looking for the start of the period.
 const MAX_SCROLL_STEPS = 60;
@@ -48,64 +39,17 @@ if (periodMs === null) {
 const cutoff = Date.now() - periodMs;
 console.log(`Reading messages since ${new Date(cutoff).toISOString()} (last ${period}).`);
 
-const context = await chromium.launchPersistentContext(PROFILE_DIR, {
-  headless: true,
-  viewport: { width: 1400, height: 900 },
-});
-
-// Persistent profiles drop session cookies on reopen, so restore the full auth
-// state — cookies plus per-origin localStorage, where MSAL keeps its tokens —
-// from the storageState file. The profile itself still provides cache/warm-start.
-try {
-  const state = JSON.parse(await readFile(AUTH_PATH, 'utf8'));
-  if (state.cookies?.length) await context.addCookies(state.cookies);
-  for (const { origin, localStorage } of state.origins ?? []) {
-    if (!localStorage?.length) continue;
-    await context.addInitScript((data) => {
-      if (location.origin === data.origin) {
-        for (const { name, value } of data.items) {
-          try { window.localStorage.setItem(name, value); } catch {}
-        }
-      }
-    }, { origin, items: localStorage });
-  }
-} catch {
-  console.log(`No saved session at "${AUTH_PATH}" — run manual-login.mjs first.`);
-}
-
-const page = context.pages()[0] ?? await context.newPage();
+const { context, page } = await openTeams();
 
 try {
-  console.log('Opening Teams...');
-  await page.goto('https://teams.microsoft.com/v2/?ctx=chat', { waitUntil: 'domcontentloaded', timeout: 120000 });
-  await page.waitForTimeout(18000); // let the SPA hydrate
+  await waitForChatList(page);
+  await openChat(page, chatName);
 
-  // Find the chat in the left rail by (partial, case-insensitive) name.
-  // Group headers (e.g. "Favorites", "Chats") are also treeitems that CONTAIN
-  // the chat rows, so we must pick the leaf: a matching treeitem that has no
-  // nested treeitem inside it.
-  console.log(`Looking for chat: "${chatName}"`);
-  const matching = page.getByRole('treeitem').filter({ hasText: new RegExp(escapeRegExp(chatName), 'i') });
-  await matching.first().waitFor({ state: 'visible', timeout: 30000 });
-
-  let chatItem = null;
-  const count = await matching.count();
-  for (let i = 0; i < count; i++) {
-    const candidate = matching.nth(i);
-    const nested = await candidate.getByRole('treeitem').count();
-    if (nested === 0) { chatItem = candidate; break; }
-  }
-  if (!chatItem) {
-    throw new Error(`No leaf chat row matched "${chatName}" (only group headers matched).`);
-  }
-
-  const resolvedName = (await chatItem.innerText()).split('\n')[0].trim();
-  console.log(`Matched chat: "${resolvedName}"`);
-  await chatItem.click();
-
-  // Wait for the conversation to render.
-  await page.locator('[data-tid="chat-pane-message"]').first().waitFor({ state: 'visible', timeout: 60000 });
-  await page.waitForTimeout(4000);
+  // Give the messages themselves a moment; a chat with none stays empty and
+  // simply yields no results.
+  await page.locator('[data-tid="chat-pane-message"]').first()
+    .waitFor({ state: 'visible', timeout: 30000 })
+    .catch(() => console.log('No messages are rendered in this chat.'));
 
   // Scroll back through the history until the oldest loaded message predates
   // the cutoff (or the conversation starts). The pane is virtualised, so
@@ -281,8 +225,4 @@ function parsePeriod(value) {
   if (!amount) return null;
   const unit = { m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2].toLowerCase()];
   return amount * unit;
-}
-
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

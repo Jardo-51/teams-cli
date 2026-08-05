@@ -89,8 +89,12 @@ A persistent browser profile (`$TEAMS_PROFILE`, default `.profile`) holds
 localStorage/cache, but reopening it drops session cookies. Since not all tenants
 offer the "Stay signed in?" option, `manual-login.mjs` also captures the full
 session (cookies + per-origin localStorage) to a storageState file
-(`$TEAMS_AUTH`, default `.auth/user.json`), which `post-message.mjs` restores
+(`$TEAMS_AUTH`, default `.auth/user.json`), which the other scripts restore
 before navigating.
+
+`teams.mjs` holds what the scripts share — launching the browser with that
+restored session, and finding and opening a chat by name — so each script only
+contains its own logic.
 
 ## Configuration
 
