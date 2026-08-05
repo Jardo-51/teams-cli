@@ -46,6 +46,43 @@ safe way to confirm the correct chat is targeted:
 nix develop .#playwright --command node post-message.mjs "Developers" "Hello" --dry-run
 ```
 
+### 3. Read recent messages
+
+Reads the recent messages of the chat whose name matches `<chat name>` (partial,
+case-insensitive) and writes them to `<output file>` as JSON.
+
+```bash
+nix develop .#playwright --command node read-chat-messages.mjs "<chat name>" "<period>" "<output file>"
+```
+
+`<period>` is a relative time span ending "now" — a number followed by `m`
+(minutes), `h` (hours) or `d` (days):
+
+```bash
+nix develop .#playwright --command node read-chat-messages.mjs "Developers" "2d" messages.json
+```
+
+The chat history is scrolled back until the start of the period is reached, so
+longer periods take longer to read. Each message is written as:
+
+```json
+[
+  {
+    "id": "1785922526738",
+    "time": "2026-08-05T09:35:26.738Z",
+    "author": "Jane Doe",
+    "body": "Hello team",
+    "reactions": [{ "author": "John Doe", "emoji": "📝" }]
+  }
+]
+```
+
+`id` is the Teams message id, `time` is ISO 8601 (UTC), and `reactions` is an
+empty array when nobody reacted. Reactor names are read by hovering the reaction
+pills — the script never clicks one, since clicking a pill toggles your own
+reaction. Be aware that opening a chat marks its messages as read, which is
+inherent to reading them through the web client.
+
 ## How auth works
 
 A persistent browser profile (`$TEAMS_PROFILE`, default `.profile`) holds
