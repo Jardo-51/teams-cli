@@ -257,8 +257,11 @@ function extractMessages(page) {
       // Teams message ids are the send time in epoch milliseconds, which is the
       // fallback if the rendered <time> element is missing.
       const timeEl = document.getElementById(`timestamp-${mid}`) ?? item?.querySelector('time[datetime]');
+      // Date only covers ±8.64e15 ms, so a longer numeric id would make
+      // toISOString() throw and take the whole run down with it.
+      const fromMid = /^\d+$/.test(mid) ? new Date(Number(mid)) : null;
       const iso = timeEl?.getAttribute('datetime')
-        || (/^\d+$/.test(mid) ? new Date(Number(mid)).toISOString() : '');
+        || (fromMid && Number.isFinite(fromMid.getTime()) ? fromMid.toISOString() : '');
 
       const authorEl = document.getElementById(`author-${mid}`) ?? item?.querySelector('[data-tid="message-author-name"]');
       const contentEl = document.getElementById(`content-${mid}`) ?? msg.querySelector('[data-message-content]');
