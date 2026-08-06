@@ -94,10 +94,11 @@ export async function openChat(page, chatName) {
   await chatItem.click();
 
   // Wait for the conversation itself rather than its messages, so that opening
-  // an empty chat does not stall.
+  // an empty chat does not stall. Callers then wait on whatever they actually
+  // need — the messages, or the compose box — so there is nothing to sleep for
+  // here.
   await page.locator('[data-tid="message-pane-list-viewport"]').first()
     .waitFor({ state: 'visible', timeout: 60000 });
-  await page.waitForTimeout(4000);
 
   return resolvedName;
 }
