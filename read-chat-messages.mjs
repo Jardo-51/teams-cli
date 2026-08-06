@@ -77,6 +77,10 @@ try {
   const collected = new Map();
   let stagnant = 0;
   let atTop = false;
+  let oldest = Infinity;
+  // Whether the scroll loop got far enough back to cover the whole period,
+  // rather than running out of steps part-way.
+  let periodCovered = false;
 
   for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
     let added = 0;
@@ -84,8 +88,8 @@ try {
       if (!collected.has(m.id)) { collected.set(m.id, m); added++; }
     }
 
-    const oldest = Math.min(...[...collected.values()].map(m => Date.parse(m.time)).filter(Number.isFinite));
-    if (Number.isFinite(oldest) && oldest < cutoff) break;
+    oldest = Math.min(...[...collected.values()].map(m => Date.parse(m.time)).filter(Number.isFinite));
+    if (Number.isFinite(oldest) && oldest < cutoff) { periodCovered = true; break; }
 
     stagnant = added > 0 ? 0 : stagnant + 1;
     if (stagnant >= MAX_STAGNANT_SCROLLS) {
@@ -100,7 +104,10 @@ try {
           + 'are loading too slowly, or the pane is not scrolling.'
         );
       }
+      // There is nothing older to read, so the period is covered as fully as
+      // this conversation allows.
       console.log('Reached the beginning of the conversation.');
+      periodCovered = true;
       break;
     }
 
@@ -116,6 +123,17 @@ try {
     // loaded range; anything else means the scroll really happened.
     atTop = scrolled.after === scrolled.before;
     await page.waitForTimeout(2500);
+  }
+
+  // Running out of scroll steps truncates the result, which otherwise looks
+  // exactly like a quiet chat — say so rather than letting the message count
+  // be the only clue.
+  if (!periodCovered) {
+    const reached = Number.isFinite(oldest) ? new Date(oldest).toISOString() : 'nothing at all';
+    console.log(
+      `WARNING: stopped after ${MAX_SCROLL_STEPS} scrolls, only reaching ${reached}, `
+      + `so the last ${period} is NOT fully covered. The output is truncated.`
+    );
   }
 
   // Consecutive messages from the same person are grouped and only the first
