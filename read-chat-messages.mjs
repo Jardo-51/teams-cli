@@ -197,7 +197,7 @@ try {
     messages.push({ ...rest, reactions: hasReactions ? reactionsById.get(m.id) ?? null : [] });
   }
 
-  await mkdir(dirname(outputFile), { recursive: true }).catch(() => {});
+  await mkdir(dirname(outputFile), { recursive: true });
   await writeFile(outputFile, JSON.stringify(messages, null, 2) + '\n', 'utf8');
   console.log(`Wrote ${messages.length} message(s) to "${outputFile}".`);
 } finally {
