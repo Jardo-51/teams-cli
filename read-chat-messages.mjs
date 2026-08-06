@@ -19,8 +19,13 @@ import { openTeams, waitForChatList, openChat } from './teams.mjs';
 // reaction). Note that opening a chat marks its messages as read, which is
 // inherent to reading them through the web client.
 
-// How far back the pane is scrolled looking for the start of the period.
-const MAX_SCROLL_STEPS = 60;
+// How much of the viewport height each scroll step moves. Kept below 1 so
+// consecutive rendered windows overlap and nothing falls between them.
+const SCROLL_STEP_FRACTION = 0.8;
+// How far back the pane is scrolled looking for the start of the period. Each
+// step only covers part of a viewport, so covering a period of days takes a
+// lot of them.
+const MAX_SCROLL_STEPS = 300;
 // Consecutive scrolls that load nothing new before we assume the top of the
 // conversation has been reached.
 const MAX_STAGNANT_SCROLLS = 3;
@@ -83,10 +88,16 @@ try {
     }
 
     console.log(`Loading older messages (${collected.size} so far)...`);
-    await page.evaluate(() => {
+    await page.evaluate((fraction) => {
       const viewport = document.querySelector('[data-tid="message-pane-list-viewport"]');
-      if (viewport) viewport.scrollTop = 0;
-    });
+      // Step up by roughly a viewport rather than jumping to the top. The pane
+      // is virtualised and only the rendered window is readable, so a jump
+      // would skip everything between the old window and the new one — those
+      // messages would never reach extractMessages().
+      if (viewport) {
+        viewport.scrollTop = Math.max(0, viewport.scrollTop - viewport.clientHeight * fraction);
+      }
+    }, SCROLL_STEP_FRACTION);
     await page.waitForTimeout(2500);
   }
 
