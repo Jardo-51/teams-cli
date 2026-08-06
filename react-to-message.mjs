@@ -22,6 +22,14 @@ const MAX_PICKER_SCROLL_STEPS = 200;
 // How much of the picker's height each of those steps moves. Kept below 1 so
 // consecutive rendered windows overlap and no row falls between them.
 const PICKER_SCROLL_FRACTION = 0.8;
+// How long the picker gets to render its emoji. Its frame appears first, so this
+// covers the list arriving, not the popup opening.
+const PICKER_TIMEOUT_MS = 15000;
+// How long each scroll step of the picker is given to render the emoji it moved
+// into view, before that window is searched.
+const PICKER_SETTLE_MS = 250;
+// How long the hover toolbar of the message gets to open.
+const MESSAGE_ACTIONS_TIMEOUT_MS = 15000;
 // How long the reaction is given to show up on the message after the emoji is
 // clicked — it is only really applied once the server has taken it.
 const REACTION_TIMEOUT_MS = 15000;
@@ -113,7 +121,7 @@ async function react(page, message, mid, ownPill) {
   // itself — searching it while it is still empty would find nothing.
   const picker = page.locator('[data-tid="reaction-picker-root"]');
   await picker.locator('[data-tid^="emoticon-button-"]').first()
-    .waitFor({ state: 'visible', timeout: 15000 });
+    .waitFor({ state: 'visible', timeout: PICKER_TIMEOUT_MS });
 
   const button = await findEmojiButton(page, picker);
   if (!button) {
@@ -155,7 +163,7 @@ async function openMessageActions(page, message, mid) {
   await message.hover();
 
   const actions = page.locator(`[data-tid="message-actions-container"][id="${mid}-popover-surface"]`);
-  await actions.waitFor({ state: 'visible', timeout: 15000 }).catch((err) => {
+  await actions.waitFor({ state: 'visible', timeout: MESSAGE_ACTIONS_TIMEOUT_MS }).catch((err) => {
     throw new Error(
       `The action toolbar of message ${mid} did not open on hover (no visible `
       + `[data-tid="message-actions-container"] with id "${mid}-popover-surface"). The Teams DOM `
@@ -187,7 +195,7 @@ async function findEmojiButton(page, picker) {
     // set — was searched in full above, so it is a plain "not in the picker",
     // the same as reaching the bottom.
     if (scrolled.reason === 'not-scrollable' || scrolled.after === scrolled.before) return null;
-    await page.waitForTimeout(250);
+    await page.waitForTimeout(PICKER_SETTLE_MS);
   }
   return null;
 }
