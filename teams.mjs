@@ -179,12 +179,29 @@ export function viewportGoneError() {
   );
 }
 
+// A pane that cannot scroll at all reports an unchanged scrollTop for every
+// step, which reads exactly like the top of the history. Nothing can be inferred
+// from such a pane, so callers stop rather than draw that conclusion.
+export function paneNotScrollableError({ clientHeight, overflowY }) {
+  return new Error(
+    'The message pane viewport ([data-tid="message-pane-list-viewport"]) is not a '
+    + `scroll container (height ${clientHeight}px, overflow-y "${overflowY}"), so the `
+    + 'history cannot be scrolled. The Teams DOM has probably changed.'
+  );
+}
+
 // Brings a message into the rendered window, scrolling back through the history
-// — and waiting for older history to load — until it appears. Callers start at
-// the newest end and work backwards, so this only ever scrolls up. Returns false
-// if the message could not be reached.
-export async function scrollMessageIntoView(page, mid) {
+// until it appears. Callers start at the newest end and work backwards, so this
+// only ever scrolls up. Returns false if the message could not be reached.
+//
+// maxHistoryWaits caps how often the walk may sit at the top of the loaded range
+// waiting for a fetch of older history. A caller hunting for a message it has
+// already seen knows the message is above it, not older, so it wants none of
+// those waits — hence the default of zero, which makes "not in the loaded
+// history" an immediate false rather than a fetch of the whole conversation.
+export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0 } = {}) {
   const message = page.locator(`[data-tid="chat-pane-message"][data-mid="${mid}"]`).first();
+  let historyWaits = 0;
   for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
     if (await message.count() > 0) {
       await message.scrollIntoViewIfNeeded().catch(() => {});
@@ -194,10 +211,12 @@ export async function scrollMessageIntoView(page, mid) {
     // A vanished viewport is a broken selector, not a missing message: returning
     // false here would have the caller report a DOM change as a bad message id.
     if (!scrolled) throw viewportGoneError();
+    if (!scrolled.clientHeight || !scrolled.scrollable) throw paneNotScrollableError(scrolled);
     // Parked at the top of what is loaded: the pane cannot move any further, but
     // older history may still be on its way, so give the fetch a chance before
     // concluding the message is not there.
     if (scrolled.after === scrolled.before) {
+      if (historyWaits++ >= maxHistoryWaits) return false;
       if (!await waitForOlderHistory(page)) return false;
       continue;
     }

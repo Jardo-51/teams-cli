@@ -1,8 +1,8 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
-  openTeams, waitForChatList, openChat,
-  scrollUp, scrollMessageIntoView, waitForOlderHistory, viewportGoneError, MAX_SCROLL_STEPS,
+  openTeams, waitForChatList, openChat, scrollUp, scrollMessageIntoView,
+  waitForOlderHistory, viewportGoneError, paneNotScrollableError, MAX_SCROLL_STEPS,
 } from './teams.mjs';
 
 // Usage:
@@ -119,17 +119,7 @@ try {
     console.log(`Loading older messages (${collected.size} so far)...`);
     const scrolled = await scrollUp(page);
     if (!scrolled) throw viewportGoneError();
-    // A pane that cannot scroll at all would report "unchanged scrollTop" for
-    // every step, which would then be read as the top of the history. Nothing
-    // can be inferred from such a pane, so fail loudly instead.
-    if (!scrolled.clientHeight || !scrolled.scrollable) {
-      throw new Error(
-        'The message pane viewport ([data-tid="message-pane-list-viewport"]) is not a '
-        + `scroll container (height ${scrolled.clientHeight}px, overflow-y `
-        + `"${scrolled.overflowY}"), so the history cannot be scrolled. The Teams DOM `
-        + 'has probably changed.'
-      );
-    }
+    if (!scrolled.clientHeight || !scrolled.scrollable) throw paneNotScrollableError(scrolled);
     // Resting at zero is the only position from which there is nothing left to
     // scroll up to; anywhere else there is still loaded history above.
     atTop = scrolled.after === 0;

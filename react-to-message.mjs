@@ -11,6 +11,10 @@ import { openTeams, waitForChatList, openChat, scrollMessageIntoView } from './t
 // again — that would take it back. Such a run reports the existing reaction and
 // changes nothing.
 
+// How often the walk back through the history may pause for a fetch of older
+// messages. The target can be arbitrarily far back, so the pauses are needed
+// here; the cap only bounds how much of a long conversation one run pages in.
+const MAX_HISTORY_WAITS = 100;
 // How far the reaction picker is scrolled looking for the emoji. The emoji list
 // is virtualised and only the rendered window is searchable, so it has to be
 // walked a viewport at a time; the full list takes some sixty steps.
@@ -59,7 +63,7 @@ try {
   // The pane opens at the newest messages, so an older target is reached by
   // scrolling back — the same walk read-chat-messages.mjs makes.
   console.log(`Looking for message ${messageId}...`);
-  if (!await scrollMessageIntoView(page, messageId)) {
+  if (!await scrollMessageIntoView(page, messageId, { maxHistoryWaits: MAX_HISTORY_WAITS })) {
     throw new Error(
       `Message ${messageId} was not found in "${resolvedName}" — the history was scrolled back `
       + 'as far as it goes without the message turning up. Check that the id belongs to this '
