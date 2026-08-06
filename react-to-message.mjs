@@ -126,7 +126,12 @@ async function settleReactions(message) {
 async function react(page, message, mid, ownPill) {
   const actions = await openMessageActions(page, message, mid);
 
-  await actions.locator('[data-tid="expanded-reactions-picker-entry"]').click();
+  // Forced past the actionability check on purpose: for a message at the top of
+  // the pane the toolbar renders under the pinned-message banner, which sits on
+  // top of the "More reactions" button and intercepts the click. The button is
+  // the right target — it is just visually overlapped — so the receives-events
+  // check is the wrong guard here and would only time out.
+  await actions.locator('[data-tid="expanded-reactions-picker-entry"]').click({ force: true });
   // The picker's frame appears before its emoji do, so wait for the list
   // itself — searching it while it is still empty would find nothing.
   const picker = page.locator('[data-tid="reaction-picker-root"]');
