@@ -1,4 +1,6 @@
-import { openTeams, waitForChatList, openChat, scrollMessageIntoView } from './teams.mjs';
+import {
+  openTeams, waitForChatList, openChat, scrollMessageIntoView, messageSelector, messageLocator,
+} from './teams.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node react-to-message.mjs "<chat name>" "<message id>" "<emoji>"
@@ -87,7 +89,7 @@ try {
     );
   }
 
-  const message = page.locator(`[data-tid="chat-pane-message"][data-mid="${messageId}"]`).first();
+  const message = messageLocator(page, messageId);
   console.log(`Found: ${await describe(page, messageId)}`);
 
   // The pane is virtualised, so the message may have been mounted a moment ago
@@ -243,8 +245,8 @@ function emojiImage(page) {
 // A short "author: body" line, so the run says which message it acted on rather
 // than only echoing back the id.
 function describe(page, mid) {
-  return page.evaluate((mid) => {
-    const msg = document.querySelector(`[data-tid="chat-pane-message"][data-mid="${mid}"]`);
+  return page.evaluate(({ mid, selector }) => {
+    const msg = document.querySelector(selector);
     const item = msg?.closest('[data-tid="chat-pane-item"]');
     const author = document.getElementById(`author-${mid}`)?.textContent?.trim()
       || item?.querySelector('[data-tid="message-author-name"]')?.textContent?.trim()
@@ -252,5 +254,5 @@ function describe(page, mid) {
     const content = document.getElementById(`content-${mid}`) ?? msg?.querySelector('[data-message-content]');
     const body = (content?.innerText ?? content?.textContent ?? '').trim().replace(/\s+/g, ' ');
     return `${author}: ${body.length > 80 ? body.slice(0, 80) + '…' : body}`;
-  }, mid);
+  }, { mid, selector: messageSelector(mid) });
 }

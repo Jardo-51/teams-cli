@@ -1,7 +1,7 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
-  openTeams, waitForChatList, openChat, scrollUp, scrollMessageIntoView,
+  openTeams, waitForChatList, openChat, scrollUp, scrollMessageIntoView, messageLocator,
   waitForOlderHistory, viewportGoneError, paneNotScrollableError, MAX_SCROLL_STEPS,
 } from './teams.mjs';
 
@@ -259,7 +259,7 @@ async function readReactions(page, mid) {
     return null;
   }
 
-  const message = page.locator(`[data-tid="chat-pane-message"][data-mid="${mid}"]`).first();
+  const message = messageLocator(page, mid);
   const userList = page.locator('[data-tid="diverse-reaction-user-list"]');
   const pills = message.locator('[data-tid="diverse-reaction-pill-button"]');
   const reactions = [];

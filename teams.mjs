@@ -116,6 +116,17 @@ export async function openChat(page, chatName) {
   return resolvedName;
 }
 
+// How a message is addressed by its id — the one selector all three scripts
+// depend on, so that a Teams rename breaks them in a single place rather than
+// one at a time. The string form is for code running inside the page.
+export function messageSelector(mid) {
+  return `[data-tid="chat-pane-message"][data-mid="${mid}"]`;
+}
+
+export function messageLocator(page, mid) {
+  return page.locator(messageSelector(mid)).first();
+}
+
 // Scrolls the message pane up by roughly a viewport. Returns the scrollTop
 // before and after the move plus the pane's scrolling geometry, or null when
 // the viewport element could not be found.
@@ -200,7 +211,7 @@ export function paneNotScrollableError({ clientHeight, overflowY }) {
 // those waits — hence the default of zero, which makes "not in the loaded
 // history" an immediate false rather than a fetch of the whole conversation.
 export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0 } = {}) {
-  const message = page.locator(`[data-tid="chat-pane-message"][data-mid="${mid}"]`).first();
+  const message = messageLocator(page, mid);
   let historyWaits = 0;
   for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
     if (await message.count() > 0) {
