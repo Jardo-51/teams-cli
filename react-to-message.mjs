@@ -21,6 +21,13 @@ const PICKER_SCROLL_FRACTION = 0.8;
 // How long the reaction is given to show up on the message after the emoji is
 // clicked — it is only really applied once the server has taken it.
 const REACTION_TIMEOUT_MS = 15000;
+// How long the message itself is given to render after the history walk reports
+// it, before anything is read off it.
+const MESSAGE_TIMEOUT_MS = 15000;
+// How long an already-rendered message is given to bring its reaction row with
+// it. A message nobody reacted to has no pills at all, so running out here is an
+// ordinary outcome rather than a failure.
+const REACTION_SETTLE_MS = 5000;
 
 const [chatName, messageId, emoji] = process.argv.slice(2);
 
@@ -63,23 +70,38 @@ try {
   const message = page.locator(`[data-tid="chat-pane-message"][data-mid="${messageId}"]`).first();
   console.log(`Found: ${await describe(page, messageId)}`);
 
+  // The pane is virtualised, so the message may have been mounted a moment ago
+  // with its reaction row still to come. Reading the pills before they render
+  // would conclude "not reacted" and click the emoji — and since reacting is a
+  // toggle, that would take back the reaction that was already there.
+  await settleReactions(message);
+
   // Reactions are stored per person, and clicking one we already left removes
   // it. Ours are the pills the client marks as pressed.
   const ownPill = message.locator('[data-tid="diverse-reaction-pill-button"][aria-pressed="true"]')
     .filter({ has: emojiImage(page) });
-  if (await ownPill.count() > 0) {
-    console.log(`Already reacted with "${emoji}" to this message — leaving it as it is.`);
-  } else {
-    await react(page, message, messageId);
-    console.log(`Reacted with "${emoji}" to message ${messageId} in "${resolvedName}".`);
-  }
+  const applied = await ownPill.count() === 0 && await react(page, message, messageId, ownPill);
+  console.log(applied
+    ? `Reacted with "${emoji}" to message ${messageId} in "${resolvedName}".`
+    : `Already reacted with "${emoji}" to this message — leaving it as it is.`);
 } finally {
   await context.close();
 }
 
+// Gives a freshly rendered message time to render its reaction row, so that the
+// pills can be read off it. A message nobody has reacted to never grows one, so
+// waiting for the row is a settle rather than a requirement.
+async function settleReactions(message) {
+  await message.waitFor({ state: 'visible', timeout: MESSAGE_TIMEOUT_MS });
+  await message.locator('[data-tid="diverse-reaction-pill-button"]').first()
+    .waitFor({ state: 'visible', timeout: REACTION_SETTLE_MS })
+    .catch(() => {});
+}
+
 // Applies the reaction: opens the message's reaction picker, finds the emoji in
-// it and waits for the reaction to land on the message.
-async function react(page, message, mid) {
+// it and waits for the reaction to land on the message. Returns false without
+// clicking anything if our reaction turns out to be there after all.
+async function react(page, message, mid, ownPill) {
   const actions = await openMessageActions(page, message, mid);
 
   await actions.locator('[data-tid="expanded-reactions-picker-entry"]').click();
@@ -96,20 +118,25 @@ async function react(page, message, mid) {
       + '(the "emoji" value read-chat-messages.mjs reports), not its name.'
     );
   }
+  // Opening the picker and walking it gave the message plenty of time to finish
+  // rendering, so the pills are asked once more right before the click — this is
+  // the last moment at which a reaction we had missed can still be spared.
+  if (await ownPill.count() > 0) return false;
+
   await button.click();
 
   // The pill only appears once the reaction has been accepted, so waiting for
   // it is what tells us the reaction was actually left rather than just clicked.
-  await message.locator('[data-tid="diverse-reaction-pill-button"][aria-pressed="true"]')
-    .filter({ has: emojiImage(page) })
-    .first()
+  await ownPill.first()
     .waitFor({ state: 'visible', timeout: REACTION_TIMEOUT_MS })
     .catch(() => {
       throw new Error(
-        `The "${emoji}" reaction did not appear on message ${mid} within `
-        + `${REACTION_TIMEOUT_MS / 1000}s, so it may not have been saved. Check the chat before retrying.`
+        `The "${emoji}" reaction is not on message ${mid} ${REACTION_TIMEOUT_MS / 1000}s after `
+        + 'clicking it, so either it was not saved, or it was already there unrendered and the '
+        + 'click took it back. Check the chat before retrying.'
       );
     });
+  return true;
 }
 
 // Hovers the message to raise its action toolbar. The toolbar is rendered
