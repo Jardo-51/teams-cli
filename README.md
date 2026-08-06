@@ -1,7 +1,7 @@
 # teams-cli
 
 Small Playwright-based CLI for automating Microsoft Teams (web) — capture a
-login session, then post messages into chats from the command line.
+login session, then post, read and react to chat messages from the command line.
 
 ## Requirements
 
@@ -98,6 +98,31 @@ one, since clicking a pill toggles your own reaction. Be aware that opening a
 chat marks its messages as read, which is inherent to reading them through the
 web client.
 
+### 4. React to a message
+
+Reacts with `<emoji>` to the message `<message id>` in the chat whose name
+matches `<chat name>` (partial, case-insensitive).
+
+```bash
+nix develop .#playwright --command node react-to-message.mjs "<chat name>" "<message id>" "<emoji>"
+```
+
+The id and the emoji are the ones `read-chat-messages.mjs` reports, so its
+output can be fed straight back in:
+
+```bash
+nix develop .#playwright --command node react-to-message.mjs "Developers" "1785922526738" "👍"
+```
+
+Pass the emoji character itself, not its name. Where several of the picker's
+emoji share one character (Teams has both an animated and a plain 👏, for
+example), the first one it offers is used.
+
+The chat history is scrolled back until the message is found, so reacting to an
+old message takes as long as reading that far back. Reacting is a toggle in
+Teams, so a reaction you already left is never clicked again — that would take
+it back; such a run reports the existing reaction and changes nothing.
+
 ## How auth works
 
 A persistent browser profile (`$TEAMS_PROFILE`, default `.profile`) holds
@@ -108,8 +133,8 @@ session (cookies + per-origin localStorage) to a storageState file
 before navigating.
 
 `teams.mjs` holds what the scripts share — launching the browser with that
-restored session, and finding and opening a chat by name — so each script only
-contains its own logic.
+restored session, finding and opening a chat by name, and scrolling the message
+pane back through the history — so each script only contains its own logic.
 
 ## Configuration
 
