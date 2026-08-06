@@ -76,6 +76,7 @@ try {
   // messages are accumulated as they appear rather than read once at the end.
   const collected = new Map();
   let stagnant = 0;
+  let atTop = false;
 
   for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
     let added = 0;
@@ -88,12 +89,32 @@ try {
 
     stagnant = added > 0 ? 0 : stagnant + 1;
     if (stagnant >= MAX_STAGNANT_SCROLLS) {
+      // Nothing new loaded — but that only means the start of the conversation
+      // if the pane is genuinely at the top of what it has. Otherwise older
+      // messages just stopped arriving, and calling it the beginning would pass
+      // off a truncated read as a complete one.
+      if (!atTop) {
+        throw new Error(
+          `No new messages after ${MAX_STAGNANT_SCROLLS} consecutive scrolls, `
+          + 'but the pane is not at the top of the loaded history. Older messages '
+          + 'are loading too slowly, or the pane is not scrolling.'
+        );
+      }
       console.log('Reached the beginning of the conversation.');
       break;
     }
 
     console.log(`Loading older messages (${collected.size} so far)...`);
-    await scrollUp(page);
+    const scrolled = await scrollUp(page);
+    if (!scrolled) {
+      throw new Error(
+        'The message pane viewport ([data-tid="message-pane-list-viewport"]) was not '
+        + 'found, so the history cannot be scrolled. The Teams DOM has probably changed.'
+      );
+    }
+    // An unchanged scrollTop means the pane was already at the top of the
+    // loaded range; anything else means the scroll really happened.
+    atTop = scrolled.after === scrolled.before;
     await page.waitForTimeout(2500);
   }
 
