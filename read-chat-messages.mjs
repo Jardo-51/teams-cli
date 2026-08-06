@@ -29,6 +29,12 @@ const MAX_SCROLL_STEPS = 300;
 // Consecutive scrolls that load nothing new before we assume the top of the
 // conversation has been reached.
 const MAX_STAGNANT_SCROLLS = 3;
+// How long the pane gets to deliver older history once it sits at the top of
+// the loaded range, before "nothing arrived" is accepted as the start of the
+// conversation. Deliberately generous: a fetch that is merely slow looks
+// exactly like a chat with no more history, and mistaking one for the other
+// truncates the export silently.
+const OLDER_HISTORY_GRACE_MS = 20_000;
 // How far apart two messages may be and still plausibly belong to the same
 // author group. Teams only groups messages that are close in time, so a
 // message with no author name that is further than this from its predecessor
@@ -106,8 +112,15 @@ try {
           + 'are loading too slowly, or the pane is not scrolling.'
         );
       }
-      // There is nothing older to read, so the period is covered as fully as
-      // this conversation allows.
+      // Sitting at the top with nothing new is what a slow older-history fetch
+      // looks like too, so wait for one properly before concluding anything.
+      if (await waitForOlderHistory(page)) {
+        stagnant = 0;
+        continue;
+      }
+      // The pane stopped growing while parked at the top: there is nothing
+      // older to read, so the period is covered as fully as this conversation
+      // allows.
       console.log('Reached the beginning of the conversation.');
       periodCovered = true;
       break;
@@ -115,15 +128,21 @@ try {
 
     console.log(`Loading older messages (${collected.size} so far)...`);
     const scrolled = await scrollUp(page);
-    if (!scrolled) {
+    if (!scrolled) throw viewportGoneError();
+    // A pane that cannot scroll at all would report "unchanged scrollTop" for
+    // every step, which would then be read as the top of the history. Nothing
+    // can be inferred from such a pane, so fail loudly instead.
+    if (!scrolled.clientHeight || !scrolled.scrollable) {
       throw new Error(
-        'The message pane viewport ([data-tid="message-pane-list-viewport"]) was not '
-        + 'found, so the history cannot be scrolled. The Teams DOM has probably changed.'
+        'The message pane viewport ([data-tid="message-pane-list-viewport"]) is not a '
+        + `scroll container (height ${scrolled.clientHeight}px, overflow-y `
+        + `"${scrolled.overflowY}"), so the history cannot be scrolled. The Teams DOM `
+        + 'has probably changed.'
       );
     }
-    // An unchanged scrollTop means the pane was already at the top of the
-    // loaded range; anything else means the scroll really happened.
-    atTop = scrolled.after === scrolled.before;
+    // Resting at zero is the only position from which there is nothing left to
+    // scroll up to; anywhere else there is still loaded history above.
+    atTop = scrolled.after === 0;
     await page.waitForTimeout(2500);
   }
 
@@ -205,7 +224,8 @@ try {
 }
 
 // Scrolls the pane up by roughly a viewport. Returns the scrollTop before and
-// after the move, or null when the viewport element could not be found.
+// after the move plus the pane's scrolling geometry, or null when the viewport
+// element could not be found.
 function scrollUp(page) {
   return page.evaluate((fraction) => {
     const viewport = document.querySelector('[data-tid="message-pane-list-viewport"]');
@@ -215,8 +235,55 @@ function scrollUp(page) {
     // skip everything between the old window and the new one.
     const before = viewport.scrollTop;
     viewport.scrollTop = Math.max(0, before - viewport.clientHeight * fraction);
-    return { before, after: viewport.scrollTop };
+    const overflowY = getComputedStyle(viewport).overflowY;
+    return {
+      before,
+      after: viewport.scrollTop,
+      clientHeight: viewport.clientHeight,
+      overflowY,
+      scrollable: ['auto', 'scroll', 'overlay'].includes(overflowY),
+    };
   }, SCROLL_STEP_FRACTION);
+}
+
+// The pane's scroll extent and the id of the topmost rendered message — the two
+// things that move when older history is added to the list. Null when the
+// viewport element could not be found.
+function readPaneState(page) {
+  return page.evaluate(() => {
+    const viewport = document.querySelector('[data-tid="message-pane-list-viewport"]');
+    if (!viewport) return null;
+    const oldest = document.querySelector('[data-tid="chat-pane-message"]');
+    return {
+      scrollHeight: viewport.scrollHeight,
+      oldestMid: oldest?.getAttribute('data-mid') ?? null,
+    };
+  });
+}
+
+// Waits for an older-history fetch to land while the pane sits at the top of
+// the loaded range. Returns true if more history arrived within the grace
+// period — scrollTop cannot show this, since it is pinned at 0 either way.
+async function waitForOlderHistory(page) {
+  const before = await readPaneState(page);
+  if (!before) throw viewportGoneError();
+
+  console.log('At the top of the loaded history — waiting for older messages...');
+  const deadline = Date.now() + OLDER_HISTORY_GRACE_MS;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(1000);
+    const now = await readPaneState(page);
+    if (!now) throw viewportGoneError();
+    if (now.scrollHeight > before.scrollHeight || now.oldestMid !== before.oldestMid) return true;
+  }
+  return false;
+}
+
+function viewportGoneError() {
+  return new Error(
+    'The message pane viewport ([data-tid="message-pane-list-viewport"]) was not '
+    + 'found, so the history cannot be scrolled. The Teams DOM has probably changed.'
+  );
 }
 
 // Jumps back to the newest messages at the bottom of the pane.
