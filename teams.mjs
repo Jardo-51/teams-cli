@@ -48,8 +48,16 @@ async function restoreSession(context) {
         }
       }, { origin, items: localStorage });
     }
-  } catch {
-    console.log(`No saved session at "${AUTH_PATH}" — run manual-login.mjs first.`);
+  } catch (err) {
+    // A missing file is the ordinary first-run case. Anything else — corrupt
+    // JSON, no read permission, a cookie rejected by addCookies — needs its own
+    // message, since running manual-login.mjs would not necessarily fix it and
+    // the caller otherwise sits in waitForChatList() until it times out.
+    if (err.code === 'ENOENT') {
+      console.log(`No saved session at "${AUTH_PATH}" — run manual-login.mjs first.`);
+    } else {
+      console.log(`Could not restore the session from "${AUTH_PATH}": ${err.message}`);
+    }
   }
 }
 
