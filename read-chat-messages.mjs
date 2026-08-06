@@ -88,16 +88,7 @@ try {
     }
 
     console.log(`Loading older messages (${collected.size} so far)...`);
-    await page.evaluate((fraction) => {
-      const viewport = document.querySelector('[data-tid="message-pane-list-viewport"]');
-      // Step up by roughly a viewport rather than jumping to the top. The pane
-      // is virtualised and only the rendered window is readable, so a jump
-      // would skip everything between the old window and the new one — those
-      // messages would never reach extractMessages().
-      if (viewport) {
-        viewport.scrollTop = Math.max(0, viewport.scrollTop - viewport.clientHeight * fraction);
-      }
-    }, SCROLL_STEP_FRACTION);
+    await scrollUp(page);
     await page.waitForTimeout(2500);
   }
 
@@ -127,10 +118,24 @@ try {
   const withReactions = selected.filter(m => m.hasReactions).length;
   if (withReactions) console.log(`Reading reactions for ${withReactions} message(s)...`);
 
+  // The scroll pass above left the pane at the top of the loaded history, so
+  // the messages we want — the newest ones — are no longer rendered. Walk back
+  // down and read newest-first, bringing each message into the rendered window
+  // just before its pills are hovered.
+  const reactionsById = new Map();
+  if (withReactions) {
+    await scrollToNewest(page);
+    for (const m of [...selected].reverse()) {
+      if (m.hasReactions) reactionsById.set(m.id, await readReactions(page, m.id));
+    }
+  }
+
   const messages = [];
   for (const m of selected) {
     const { hasReactions, ...rest } = m;
-    messages.push({ ...rest, reactions: hasReactions ? await readReactions(page, m.id) : [] });
+    // null (rather than []) where the reactions could not be read, so that a
+    // failure is visible in the output instead of looking like "nobody reacted".
+    messages.push({ ...rest, reactions: hasReactions ? reactionsById.get(m.id) ?? null : [] });
   }
 
   await mkdir(dirname(outputFile), { recursive: true }).catch(() => {});
@@ -138,6 +143,47 @@ try {
   console.log(`Wrote ${messages.length} message(s) to "${outputFile}".`);
 } finally {
   await context.close();
+}
+
+// Scrolls the pane up by roughly a viewport. Returns the scrollTop before and
+// after the move, or null when the viewport element could not be found.
+function scrollUp(page) {
+  return page.evaluate((fraction) => {
+    const viewport = document.querySelector('[data-tid="message-pane-list-viewport"]');
+    if (!viewport) return null;
+    // Step up by roughly a viewport rather than jumping to the top. The pane is
+    // virtualised and only the rendered window is readable, so a jump would
+    // skip everything between the old window and the new one.
+    const before = viewport.scrollTop;
+    viewport.scrollTop = Math.max(0, before - viewport.clientHeight * fraction);
+    return { before, after: viewport.scrollTop };
+  }, SCROLL_STEP_FRACTION);
+}
+
+// Jumps back to the newest messages at the bottom of the pane.
+async function scrollToNewest(page) {
+  await page.evaluate(() => {
+    const viewport = document.querySelector('[data-tid="message-pane-list-viewport"]');
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  });
+  await page.waitForTimeout(2500);
+}
+
+// Brings a message back into the rendered window. Callers work newest-first, so
+// this only ever has to walk up from wherever the previous message left the
+// pane. Returns false if the message could not be reached.
+async function scrollMessageIntoView(page, mid) {
+  const message = page.locator(`[data-tid="chat-pane-message"][data-mid="${mid}"]`).first();
+  for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
+    if (await message.count() > 0) {
+      await message.scrollIntoViewIfNeeded().catch(() => {});
+      return true;
+    }
+    const scrolled = await scrollUp(page);
+    if (!scrolled || scrolled.after === scrolled.before) return false;
+    await page.waitForTimeout(1500);
+  }
+  return false;
 }
 
 // Reads every message currently rendered in the pane.
@@ -170,14 +216,16 @@ function extractMessages(page) {
   });
 }
 
-// Hovering a reaction pill opens a flyout listing who reacted with it.
+// Hovering a reaction pill opens a flyout listing who reacted with it. Returns
+// null when the message could not be brought back into the rendered window, so
+// that "could not read" stays distinguishable from "nobody reacted".
 async function readReactions(page, mid) {
-  const message = page.locator(`[data-tid="chat-pane-message"][data-mid="${mid}"]`).first();
-  if (await message.count() === 0) {
-    console.log(`  message ${mid} is no longer rendered — skipping its reactions.`);
-    return [];
+  if (!await scrollMessageIntoView(page, mid)) {
+    console.log(`  message ${mid} could not be brought back into view — its reactions are unknown.`);
+    return null;
   }
 
+  const message = page.locator(`[data-tid="chat-pane-message"][data-mid="${mid}"]`).first();
   const userList = page.locator('[data-tid="diverse-reaction-user-list"]');
   const pills = message.locator('[data-tid="diverse-reaction-pill-button"]');
   const reactions = [];

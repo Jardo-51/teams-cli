@@ -85,11 +85,13 @@ longer periods take longer to read. Each message is written as:
 ]
 ```
 
-`id` is the Teams message id, `time` is ISO 8601 (UTC), and `reactions` is an
-empty array when nobody reacted. Reactor names are read by hovering the reaction
-pills — the script never clicks one, since clicking a pill toggles your own
-reaction. Be aware that opening a chat marks its messages as read, which is
-inherent to reading them through the web client.
+`id` is the Teams message id and `time` is ISO 8601 (UTC). `reactions` is an
+empty array when nobody reacted, and `null` when the message had reactions that
+could not be read — so a failure is never mistaken for "nobody reacted".
+Reactor names are read by hovering the reaction pills — the script never clicks
+one, since clicking a pill toggles your own reaction. Be aware that opening a
+chat marks its messages as read, which is inherent to reading them through the
+web client.
 
 ## How auth works
 
