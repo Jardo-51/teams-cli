@@ -70,6 +70,11 @@ since the reaction authors then never have to be read:
 nix develop .#playwright --command node read-chat-messages.mjs "Developers" "2d" messages.json --without-reactions-only
 ```
 
+The output file holds real names and message bodies, so treat it like the chat
+itself and keep it out of the repository. The default `messages.json` and an
+`export/` directory are git-ignored for that reason; if you write somewhere
+else, make sure that path is ignored too.
+
 The chat history is scrolled back until the start of the period is reached, so
 longer periods take longer to read. Each message is written as:
 
