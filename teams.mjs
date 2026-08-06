@@ -191,7 +191,9 @@ export async function scrollMessageIntoView(page, mid) {
       return true;
     }
     const scrolled = await scrollUp(page);
-    if (!scrolled) return false;
+    // A vanished viewport is a broken selector, not a missing message: returning
+    // false here would have the caller report a DOM change as a bad message id.
+    if (!scrolled) throw viewportGoneError();
     // Parked at the top of what is loaded: the pane cannot move any further, but
     // older history may still be on its way, so give the fetch a chance before
     // concluding the message is not there.
