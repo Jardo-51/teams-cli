@@ -61,6 +61,14 @@ if (/["'\\]/.test(emoji)) {
   console.log(`Invalid emoji "${emoji}" — expected a single emoji character, e.g. "👍".`);
   process.exit(1);
 }
+// An emoji name ("thumbsup") or a word passes the check above and would only be
+// refused minutes later, after the browser has opened and the picker has been
+// walked. Every emoji lies outside ASCII, so that one cheap test rejects plain
+// text here; anything finer is left to the picker lookup.
+if (!/[^\x00-\x7F]/.test(emoji)) {
+  console.log(`Invalid emoji "${emoji}" — expected the emoji character itself, e.g. "👍", not its name.`);
+  process.exit(1);
+}
 
 const { context, page } = await openTeams();
 
