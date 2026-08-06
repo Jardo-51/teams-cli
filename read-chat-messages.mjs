@@ -304,17 +304,24 @@ async function readReactions(page, mid) {
     }).catch(() => 0);
 
     let authors = [];
+    let stuckFlyout = false;
     for (let attempt = 0; attempt < 3 && authors.length < Math.max(expected, 1); attempt++) {
-      // Make sure a previous flyout is gone, so its entries can't be read here.
-      await closeFlyout(page, userList);
+      // A previous flyout still on screen would have its entries read here and
+      // attributed to this emoji, so skip the pill rather than read through it.
+      if (!await closeFlyout(page, userList)) { stuckFlyout = true; break; }
       try {
         await pill.scrollIntoViewIfNeeded();
         await pill.hover();
         await userList.first().waitFor({ state: 'visible', timeout: 5000 });
-        authors = await readFlyoutAuthors(page, expected);
+        authors = await readFlyoutAuthors(page, userList, expected);
       } catch {
         // Flyout did not open on this attempt; the next one retries it.
       }
+    }
+
+    if (stuckFlyout) {
+      console.log(`  previous flyout did not close — skipping the "${emoji}" reaction on message ${mid}.`);
+      continue;
     }
 
     if (authors.length < expected) {
@@ -330,24 +337,35 @@ async function readReactions(page, mid) {
   return reactions;
 }
 
-// Entries render progressively, so poll until the expected number shows up.
-async function readFlyoutAuthors(page, expected) {
+// Entries render progressively, so poll until the expected number shows up. The
+// entries are read from within the flyout element rather than from the whole
+// document, so that a lingering flyout cannot contribute names to this one.
+async function readFlyoutAuthors(page, userList, expected) {
   let authors = [];
   for (let i = 0; i < 12; i++) {
-    authors = await page.evaluate(() =>
-      [...document.querySelectorAll('[data-tid="diverse-reaction-user-list-item"]')]
+    // Two flyouts open at once makes attribution guesswork; no names beat names
+    // filed under the wrong emoji.
+    if (await userList.count() > 1) return [];
+
+    authors = await userList.first().evaluate(list =>
+      [...list.querySelectorAll('[data-tid="diverse-reaction-user-list-item"]')]
         .map(el => el.innerText.trim())
         .filter(Boolean)
-    );
+    ).catch(() => []);
+
     if (authors.length >= expected) break;
     await page.waitForTimeout(500);
   }
   return authors;
 }
 
-async function closeFlyout(page, userList) {
-  await page.mouse.move(5, 5);
-  await userList.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+// Moves the pointer away from the pill and waits for the flyout to go. Returns
+// false if it is still on screen, since its entries would then be read as part
+// of whatever is hovered next.
+function closeFlyout(page, userList) {
+  return page.mouse.move(5, 5)
+    .then(() => userList.first().waitFor({ state: 'hidden', timeout: 5000 }))
+    .then(() => true, () => false);
 }
 
 function parsePeriod(value) {
