@@ -29,6 +29,11 @@ const MAX_SCROLL_STEPS = 300;
 // Consecutive scrolls that load nothing new before we assume the top of the
 // conversation has been reached.
 const MAX_STAGNANT_SCROLLS = 3;
+// How far apart two messages may be and still plausibly belong to the same
+// author group. Teams only groups messages that are close in time, so a
+// message with no author name that is further than this from its predecessor
+// lost its group header rather than being part of that group.
+const AUTHOR_GROUP_WINDOW_MS = 5 * 60_000;
 
 const args = process.argv.slice(2);
 const withoutReactionsOnly = args.includes('--without-reactions-only');
@@ -99,9 +104,22 @@ try {
     .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
 
   let lastAuthor = '';
+  let lastTime = -Infinity;
   for (const m of all) {
-    if (m.author) lastAuthor = m.author;
-    else m.author = lastAuthor;
+    const time = Date.parse(m.time);
+    if (m.author) {
+      lastAuthor = m.author;
+    } else if (time - lastTime <= AUTHOR_GROUP_WINDOW_MS) {
+      m.author = lastAuthor;
+    } else {
+      // Too far from the previous message to belong to its group, so the header
+      // this one belongs to was never collected. Naming the previous author
+      // would confidently name the wrong person; leave it — and the rest of
+      // this group — unattributed instead.
+      lastAuthor = '';
+      m.author = '';
+    }
+    lastTime = time;
   }
 
   const inRange = all.filter(m => Date.parse(m.time) >= cutoff);
