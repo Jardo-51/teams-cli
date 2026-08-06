@@ -85,11 +85,13 @@ try {
   for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
     let added = 0;
     for (const m of await extractMessages(page)) {
-      if (!collected.has(m.id)) { collected.set(m.id, m); added++; }
+      if (collected.has(m.id)) continue;
+      collected.set(m.id, m);
+      added++;
+      if (m.ts !== null && m.ts < oldest) oldest = m.ts;
     }
 
-    oldest = Math.min(...[...collected.values()].map(m => Date.parse(m.time)).filter(Number.isFinite));
-    if (Number.isFinite(oldest) && oldest < cutoff) { periodCovered = true; break; }
+    if (oldest < cutoff) { periodCovered = true; break; }
 
     stagnant = added > 0 ? 0 : stagnant + 1;
     if (stagnant >= MAX_STAGNANT_SCROLLS) {
@@ -139,16 +141,15 @@ try {
   // Consecutive messages from the same person are grouped and only the first
   // carries the author name, so carry the last known author forward.
   const all = [...collected.values()]
-    .filter(m => Number.isFinite(Date.parse(m.time)))
-    .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+    .filter(m => m.ts !== null)
+    .sort((a, b) => a.ts - b.ts);
 
   let lastAuthor = '';
   let lastTime = -Infinity;
   for (const m of all) {
-    const time = Date.parse(m.time);
     if (m.author) {
       lastAuthor = m.author;
-    } else if (time - lastTime <= AUTHOR_GROUP_WINDOW_MS) {
+    } else if (m.ts - lastTime <= AUTHOR_GROUP_WINDOW_MS) {
       m.author = lastAuthor;
     } else {
       // Too far from the previous message to belong to its group, so the header
@@ -158,10 +159,10 @@ try {
       lastAuthor = '';
       m.author = '';
     }
-    lastTime = time;
+    lastTime = m.ts;
   }
 
-  const inRange = all.filter(m => Date.parse(m.time) >= cutoff);
+  const inRange = all.filter(m => m.ts >= cutoff);
   console.log(`${inRange.length} message(s) in the last ${period}.`);
 
   // Whether a message has any reaction is already visible on the message
@@ -189,7 +190,8 @@ try {
 
   const messages = [];
   for (const m of selected) {
-    const { hasReactions, ...rest } = m;
+    // ts and hasReactions are working state; only the documented shape is written.
+    const { hasReactions, ts, ...rest } = m;
     // null (rather than []) where the reactions could not be read, so that a
     // failure is visible in the output instead of looking like "nobody reacted".
     messages.push({ ...rest, reactions: hasReactions ? reactionsById.get(m.id) ?? null : [] });
@@ -261,9 +263,14 @@ function extractMessages(page) {
       const authorEl = document.getElementById(`author-${mid}`) ?? item?.querySelector('[data-tid="message-author-name"]');
       const contentEl = document.getElementById(`content-${mid}`) ?? msg.querySelector('[data-message-content]');
 
+      // Parsed once here and carried alongside the ISO string, so the rest of
+      // the script sorts, compares and filters without re-parsing.
+      const ts = Date.parse(iso);
+
       messages.push({
         id: mid,
         time: iso,
+        ts: Number.isFinite(ts) ? ts : null,
         author: authorEl?.textContent?.trim() ?? '',
         body: (contentEl?.innerText ?? contentEl?.textContent ?? '').trim(),
         hasReactions: !!msg.querySelector('[data-tid="diverse-reaction-pill-button"]'),
