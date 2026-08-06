@@ -133,11 +133,14 @@ async function react(page, message, mid, ownPill) {
   // it is what tells us the reaction was actually left rather than just clicked.
   await ownPill.first()
     .waitFor({ state: 'visible', timeout: REACTION_TIMEOUT_MS })
-    .catch(() => {
+    // The cause is carried along, so a wait that failed for some other reason —
+    // a crashed page, a closed target — is not read as a reaction gone missing.
+    .catch((err) => {
       throw new Error(
         `The "${emoji}" reaction is not on message ${mid} ${REACTION_TIMEOUT_MS / 1000}s after `
         + 'clicking it, so either it was not saved, or it was already there unrendered and the '
-        + 'click took it back. Check the chat before retrying.'
+        + 'click took it back. Check the chat before retrying.',
+        { cause: err }
       );
     });
   return true;
@@ -152,11 +155,12 @@ async function openMessageActions(page, message, mid) {
   await message.hover();
 
   const actions = page.locator(`[data-tid="message-actions-container"][id="${mid}-popover-surface"]`);
-  await actions.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {
+  await actions.waitFor({ state: 'visible', timeout: 15000 }).catch((err) => {
     throw new Error(
       `The action toolbar of message ${mid} did not open on hover (no visible `
       + `[data-tid="message-actions-container"] with id "${mid}-popover-surface"). The Teams DOM `
-      + 'has probably changed.'
+      + 'has probably changed.',
+      { cause: err }
     );
   });
   return actions;
