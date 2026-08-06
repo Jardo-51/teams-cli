@@ -173,29 +173,39 @@ async function findEmojiButton(page, picker) {
     if (await buttons.count() > 0) return buttons.first();
 
     const scrolled = await scrollPicker(page, PICKER_SCROLL_FRACTION);
-    if (!scrolled) {
+    if (scrolled.reason === 'no-content') {
       throw new Error(
-        'The reaction picker has no scrollable emoji list, so only the emoji on screen could '
-        + 'be searched. The Teams DOM has probably changed.'
+        'The reaction picker has no emoji list ([data-tid="unified-picker-emojis-content"]), so '
+        + 'no emoji could be searched. The Teams DOM has probably changed.'
       );
     }
-    if (scrolled.after === scrolled.before) return null; // bottom of the list
+    // A list with nothing to scroll — one that fits on screen, or a filtered
+    // set — was searched in full above, so it is a plain "not in the picker",
+    // the same as reaching the bottom.
+    if (scrolled.reason === 'not-scrollable' || scrolled.after === scrolled.before) return null;
     await page.waitForTimeout(250);
   }
   return null;
 }
 
 // Scrolls the picker's emoji list down by a fraction of its height. Returns the
-// scrollTop before and after the move, or null when the list is not scrollable.
+// scrollTop before and after the move, or a reason why nothing moved — kept
+// apart because "the picker is not there" is a DOM change while "there is
+// nothing to scroll" is an ordinary short list.
 function scrollPicker(page, fraction) {
   return page.evaluate((fraction) => {
     const content = document.querySelector('[data-tid="reaction-picker-root"] [data-tid="unified-picker-emojis-content"]');
-    if (!content) return null;
+    if (!content) return { reason: 'no-content' };
     // The element that scrolls is an unnamed wrapper inside the emoji content,
     // so it is picked out by being the one with something to scroll.
-    const scroller = [...content.querySelectorAll('*')].find(el =>
-      el.scrollHeight > el.clientHeight && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY));
-    if (!scroller) return null;
+    const scrollers = [...content.querySelectorAll('*')].filter(el =>
+      el.scrollHeight > el.clientHeight && ['auto', 'scroll', 'overlay'].includes(getComputedStyle(el).overflowY));
+    if (!scrollers.length) return { reason: 'not-scrollable' };
+    // Nested wrappers can overflow by a few pixels each, and the first in
+    // document order is not necessarily the emoji grid — the grid is the one
+    // with a whole virtualised list's worth of scrolling left in it.
+    const scroller = scrollers.reduce((widest, el) =>
+      el.scrollHeight - el.clientHeight > widest.scrollHeight - widest.clientHeight ? el : widest);
     const before = scroller.scrollTop;
     scroller.scrollTop = before + scroller.clientHeight * fraction;
     return { before, after: scroller.scrollTop };
