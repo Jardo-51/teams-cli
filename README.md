@@ -84,15 +84,20 @@ longer periods take longer to read. Each message is written as:
     "id": "1785922526738",
     "time": "2026-08-05T09:35:26.738Z",
     "author": "Jane Doe",
-    "body": "Hello team",
+    "body": "Hello team, see https://example.com/…",
+    "links": [{ "text": "https://example.com/…", "href": "https://example.com/very/long/path" }],
     "reactions": [{ "author": "John Doe", "emoji": "📝" }]
   }
 ]
 ```
 
-`id` is the Teams message id and `time` is ISO 8601 (UTC). `reactions` is an
-empty array when nobody reacted, and `null` when the message had reactions that
-could not be read — so a failure is never mistaken for "nobody reacted".
+`id` is the Teams message id and `time` is ISO 8601 (UTC). `body` is the
+message text, but Teams truncates long links in it (e.g. `https://…/…`), so
+`links` lists each link separately: `text` is the (possibly truncated) label as
+it appears in `body`, and `href` is the full, untruncated URL. It is an empty
+array when the message has no links. `reactions` is an empty array when nobody
+reacted, and `null` when the message had reactions that could not be read — so a
+failure is never mistaken for "nobody reacted".
 Reactor names are read by hovering the reaction pills — the script never clicks
 one, since clicking a pill toggles your own reaction. Be aware that opening a
 chat marks its messages as read, which is inherent to reading them through the

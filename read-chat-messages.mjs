@@ -237,12 +237,23 @@ function extractMessages(page) {
       // the script sorts, compares and filters without re-parsing.
       const ts = Date.parse(iso);
 
+      // innerText only carries the anchor's display text, which Teams truncates
+      // for long links (e.g. "https://.../…"), so the href is read separately to
+      // keep full URLs. Both are kept because the text is the human-facing label.
+      const links = contentEl
+        ? [...contentEl.querySelectorAll('a[href]')].map(a => ({
+            text: (a.textContent ?? '').trim(),
+            href: a.getAttribute('href'),
+          }))
+        : [];
+
       messages.push({
         id: mid,
         time: iso,
         ts: Number.isFinite(ts) ? ts : null,
         author: authorEl?.textContent?.trim() ?? '',
         body: (contentEl?.innerText ?? contentEl?.textContent ?? '').trim(),
+        links,
         hasReactions: !!msg.querySelector('[data-tid="diverse-reaction-pill-button"]'),
       });
     }
