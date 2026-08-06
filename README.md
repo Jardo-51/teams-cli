@@ -46,14 +46,70 @@ safe way to confirm the correct chat is targeted:
 nix develop .#playwright --command node post-message.mjs "Developers" "Hello" --dry-run
 ```
 
+### 3. Read recent messages
+
+Reads the recent messages of the chat whose name matches `<chat name>` (partial,
+case-insensitive) and writes them to `<output file>` as JSON.
+
+```bash
+nix develop .#playwright --command node read-chat-messages.mjs "<chat name>" "<period>" "<output file>"
+```
+
+`<period>` is a relative time span ending "now" — a number followed by `m`
+(minutes), `h` (hours) or `d` (days):
+
+```bash
+nix develop .#playwright --command node read-chat-messages.mjs "Developers" "2d" messages.json
+```
+
+Add `--without-reactions-only` to keep just the messages nobody has reacted to
+— handy for spotting requests that went unacknowledged. It also runs faster,
+since the reaction authors then never have to be read:
+
+```bash
+nix develop .#playwright --command node read-chat-messages.mjs "Developers" "2d" messages.json --without-reactions-only
+```
+
+The output file holds real names and message bodies, so treat it like the chat
+itself and keep it out of the repository. The default `messages.json` and an
+`export/` directory are git-ignored for that reason; if you write somewhere
+else, make sure that path is ignored too.
+
+The chat history is scrolled back until the start of the period is reached, so
+longer periods take longer to read. Each message is written as:
+
+```json
+[
+  {
+    "id": "1785922526738",
+    "time": "2026-08-05T09:35:26.738Z",
+    "author": "Jane Doe",
+    "body": "Hello team",
+    "reactions": [{ "author": "John Doe", "emoji": "📝" }]
+  }
+]
+```
+
+`id` is the Teams message id and `time` is ISO 8601 (UTC). `reactions` is an
+empty array when nobody reacted, and `null` when the message had reactions that
+could not be read — so a failure is never mistaken for "nobody reacted".
+Reactor names are read by hovering the reaction pills — the script never clicks
+one, since clicking a pill toggles your own reaction. Be aware that opening a
+chat marks its messages as read, which is inherent to reading them through the
+web client.
+
 ## How auth works
 
 A persistent browser profile (`$TEAMS_PROFILE`, default `.profile`) holds
 localStorage/cache, but reopening it drops session cookies. Since not all tenants
 offer the "Stay signed in?" option, `manual-login.mjs` also captures the full
 session (cookies + per-origin localStorage) to a storageState file
-(`$TEAMS_AUTH`, default `.auth/user.json`), which `post-message.mjs` restores
+(`$TEAMS_AUTH`, default `.auth/user.json`), which the other scripts restore
 before navigating.
+
+`teams.mjs` holds what the scripts share — launching the browser with that
+restored session, and finding and opening a chat by name — so each script only
+contains its own logic.
 
 ## Configuration
 
