@@ -21,7 +21,11 @@ const { page, close } = await openTeams();
 
 try {
   await waitForChatList(page);
-  const resolvedName = await openChat(page, chatName);
+  // Posting never reads the message pane, so it does not wait for the pane to
+  // settle at the newest end. What makes this safe is openChat confirming the
+  // switch itself — the compose box of the chat being left stays visible for
+  // most of a second, and typing into that one would post to the wrong chat.
+  const resolvedName = await openChat(page, chatName, { atNewest: false });
 
   const composer = composerLocator(page);
   await composer.waitFor({ state: 'visible', timeout: 30000 });

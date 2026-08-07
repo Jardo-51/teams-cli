@@ -26,6 +26,11 @@ const HEALTH_CHECK_TIMEOUT_MS = 15_000;
 // How long the message pane gets to settle after being scrolled to the newest
 // messages, so the virtualised list has rendered that end before it is read.
 const PANE_SETTLE_MS = 2500;
+// How long a clicked chat gets to become the one on screen. Generous next to the
+// sub-second switch it normally waits for, but not unbounded: this is also what
+// a chat whose title is spelled differently from its row would wait out on every
+// single command, so it trades a slow worst case against a slow common one.
+const CHAT_SWITCH_TIMEOUT_MS = 15_000;
 
 // How much of the viewport height each scroll step moves. Kept below 1 so
 // consecutive rendered windows overlap and nothing falls between them.
@@ -266,7 +271,12 @@ export async function waitForChatList(page, { timeout = 120000 } = {}) {
 
 // Opens the chat whose name matches chatName (partial, case-insensitive) and
 // returns the name it resolved to.
-export async function openChat(page, chatName) {
+//
+// atNewest puts the message pane back at the newest messages before returning.
+// Callers that walk the history need it; the one that only types into the
+// compose box does not, and it is not what makes the chat switch safe — see
+// waitForChatOpen below.
+export async function openChat(page, chatName, { atNewest = true } = {}) {
   console.log(`Looking for chat: "${chatName}"`);
 
   // Group headers (e.g. "Favorites", "Chats") are also treeitems that CONTAIN
@@ -290,6 +300,8 @@ export async function openChat(page, chatName) {
   console.log(`Matched chat: "${resolvedName}"`);
   await chatItem.click();
 
+  await waitForChatOpen(page, resolvedName);
+
   // Wait for the conversation itself rather than its messages, so that opening
   // an empty chat does not stall. Callers then wait on whatever they actually
   // need — the messages, or the compose box — so there is nothing to sleep for
@@ -302,17 +314,43 @@ export async function openChat(page, chatName) {
   // previous command scrolled far up can leave the pane where that command left
   // it, and reading or reacting from the middle of the history is exactly the
   // kind of intermittent failure that is painful to reproduce.
-  //
-  // The settle inside this is also the only thing separating the click above
-  // from what the caller does next, and on a shared page that matters even to a
-  // caller with no interest in the scroll position: the wait above is for the
-  // first *visible* viewport, which — when the browser already had another chat
-  // open — is the outgoing one, and the compose box picked straight after it
-  // could still belong to the previous chat. So every caller pays it, including
-  // the one that only types.
-  await scrollToNewest(page);
+  if (atNewest) await scrollToNewest(page);
 
   return resolvedName;
+}
+
+// Waits until the chat that was clicked is the one actually on screen.
+//
+// Clicking a chat row does not swap the conversation synchronously: the previous
+// chat's message pane AND its compose box stay mounted and visible while the new
+// one loads — measured at roughly 700-900ms on a warm page. So "a message pane is
+// visible" and "a compose box is visible" are both true of the chat we are
+// leaving, and a caller that acts on them straight after the click reads the
+// wrong history, or types a message into the wrong conversation.
+//
+// The document title names the open chat ("Chat | <name> | Microsoft Teams") and
+// changes in the same frame as the pane's messages and the compose box, which
+// makes it the positive signal the DOM otherwise does not offer: the rows carry
+// no aria-selected, and the panes and boxes of two chats are indistinguishable by
+// attribute.
+async function waitForChatOpen(page, resolvedName) {
+  try {
+    await page.waitForFunction(
+      (name) => document.title.includes(name),
+      resolvedName,
+      { timeout: CHAT_SWITCH_TIMEOUT_MS },
+    );
+  } catch {
+    // The title is Teams' to change, and a chat whose row text is not spelled
+    // the same way there would otherwise fail every command outright. Falling
+    // back to a plain settle is what this did before the title was used at all,
+    // so a signal that stops working costs the guarantee, not the feature.
+    console.log(
+      `The window title ("${await page.title()}") never named "${resolvedName}", so the chat switch `
+      + 'could not be confirmed — falling back to a fixed wait.'
+    );
+    await page.waitForTimeout(PANE_SETTLE_MS);
+  }
 }
 
 // Jumps to the newest messages at the bottom of the pane.
