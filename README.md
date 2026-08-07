@@ -196,7 +196,7 @@ finding it, starting it, and serialising commands against it.
 | `TEAMS_PROFILE`      | `.profile`        | Persistent browser profile directory                              |
 | `TEAMS_AUTH`         | `.auth/user.json` | Playwright storageState (auth) file                               |
 | `TEAMS_DAEMON`       | `1`               | Set to `0` to give every command its own browser                  |
-| `TEAMS_DAEMON_IDLE`  | `15`              | Minutes without a command before the daemon exits; `0` never      |
+| `TEAMS_DAEMON_IDLE`  | `15`              | Whole minutes without a command before the daemon exits; `0` never |
 | `TEAMS_DAEMON_PORT`  | `0`               | Debugging port for the daemon's browser; `0` picks a free one     |
 | `TEAMS_DAEMON_DIR`   | `.daemon`         | Where the daemon's record, log and command lock are kept          |
 | `TEAMS_CDP`          | —                 | Attach to this CDP endpoint instead of managing a daemon          |
