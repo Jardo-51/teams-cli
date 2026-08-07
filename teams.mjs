@@ -122,7 +122,19 @@ async function connectToDaemon() {
     // Stopped rather than merely forgotten: the recorded process may still be
     // running but unusable, and starting a second daemon on the same profile
     // while it is would leave two browsers writing over the same session.
-    await stopDaemon();
+    const stopped = await stopDaemon();
+    // A daemon that ignored SIGTERM is still holding the profile, so the retry
+    // below would start that second browser. Said here rather than left to be
+    // discovered as whatever the new browser fails with, which names neither the
+    // old daemon nor the reason.
+    if (!stopped.stopped && stopped.reason === 'timeout') {
+      throw new Error(
+        `The shared browser is unusable and its daemon (pid ${stopped.pid}) did not stop when asked. `
+        + 'Kill it before running another command, so that a second browser is not started on the '
+        + 'same profile directory.',
+        { cause: err }
+      );
+    }
     return chromium.connectOverCDP(await ensureDaemon());
   }
 }
