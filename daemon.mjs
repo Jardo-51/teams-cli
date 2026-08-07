@@ -264,9 +264,11 @@ export async function tryCommandLock() {
 // stale at the very moment it was being taken.
 async function writeLock(token) {
   await mkdir(DAEMON_DIR, { recursive: true });
-  // One staging name per process, so two of them cannot overwrite each other's
-  // content between the write and the link.
-  const staging = `${LOCK_PATH}.${process.pid}.staging`;
+  // One staging name per attempt, not per process: the daemon's idle check can
+  // have two of these in flight at once, and a shared name means one attempt
+  // writes over the other's content and then deletes the file the other is about
+  // to link. The token is already unique, so it names the file too.
+  const staging = `${LOCK_PATH}.${token.split(':')[2]}.staging`;
   try {
     await writeFile(staging, token);
     await link(staging, LOCK_PATH);
