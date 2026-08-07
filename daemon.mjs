@@ -29,15 +29,17 @@ export const DAEMON_ENABLED = process.env.TEAMS_DAEMON !== '0';
 // Chromium pick a free one, which is what we want: the port is then read back
 // from the browser rather than guessed, so a fixed port that something else
 // already holds cannot silently become the browser we attach to.
-export const DAEMON_PORT = numberFromEnv('TEAMS_DAEMON_PORT', 0);
+export const DAEMON_PORT = numberFromEnv('TEAMS_DAEMON_PORT', 0, { integer: true, max: 65535 });
 // An externally managed browser to attach to instead. With this set nothing is
 // ever spawned or stopped here.
 export const CDP_ENDPOINT = process.env.TEAMS_CDP || '';
 // How long the daemon stays up with no command using it. A daemon is a signed-in
 // Teams client, and one that runs forever shows you as Available forever, so it
 // goes away after a burst of activity rather than living until the next reboot.
-// 0 keeps it up indefinitely.
-export const IDLE_TIMEOUT_MS = numberFromEnv('TEAMS_DAEMON_IDLE', 15) * 60_000;
+// 0 keeps it up indefinitely. Whole minutes only: a fractional value gives a
+// timeout shorter than the check interval, which reads as a daemon that keeps
+// dying on its own.
+export const IDLE_TIMEOUT_MS = numberFromEnv('TEAMS_DAEMON_IDLE', 15, { integer: true }) * 60_000;
 
 // How long a command waits for the browser while another command has it. Reading
 // a long history takes many minutes, so this is generous — it is a deadlock
@@ -348,12 +350,17 @@ export function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function numberFromEnv(name, fallback) {
+// Validated against what the specific variable can actually be, not merely
+// against "a number": a port of 8080.5 or 99999 is passed to the browser
+// unchanged otherwise, and comes back as "the browser did not open a debugging
+// port", which points at the browser rather than at the typo.
+function numberFromEnv(name, fallback, { integer = false, min = 0, max = Infinity } = {}) {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
   const value = Number(raw);
-  if (!Number.isFinite(value) || value < 0) {
-    console.log(`Ignoring ${name}="${raw}" — expected a non-negative number; using ${fallback}.`);
+  const expected = `${integer ? 'a whole number' : 'a number'} between ${min} and ${max}`;
+  if (!Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
+    console.log(`Ignoring ${name}="${raw}" — expected ${expected}; using ${fallback}.`);
     return fallback;
   }
   return value;
