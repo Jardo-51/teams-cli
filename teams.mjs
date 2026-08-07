@@ -56,7 +56,20 @@ const OLDER_HISTORY_GRACE_MS = 20_000;
 export async function openTeams({
   headless = true, restoreAuth = true, daemon = DAEMON_ENABLED, args = [],
 } = {}) {
-  if (daemon) return attachToDaemon();
+  if (daemon) {
+    // None of these mean anything for a browser this process did not launch, and
+    // ignoring them would make restoreAuth: false return the opposite of what it
+    // asks for — the daemon's signed-in page. manual-login.mjs is only correct
+    // today because it also passes daemon: false; that coupling should not be
+    // something the next caller has to know.
+    if (!restoreAuth || !headless || args.length) {
+      throw new Error(
+        'restoreAuth, headless and args only apply to a browser the command launches itself — '
+        + 'pass daemon: false to get one.'
+      );
+    }
+    return attachToDaemon();
+  }
 
   const context = await chromium.launchPersistentContext(PROFILE_DIR, {
     headless,
