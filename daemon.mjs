@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { openSync, closeSync } from 'node:fs';
 import { link, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { uptime } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -50,6 +51,11 @@ const STARTUP_TIMEOUT_MS = 180_000;
 const STOP_TIMEOUT_MS = 30_000;
 // How large the shared daemon log may grow before it is started over.
 const MAX_LOG_BYTES = 256 * 1024;
+// How far the recorded start time may sit before the boot and still be read as
+// "this boot". Both sides of that comparison are wall-clock readings taken at
+// different times, so an NTP step in between must not turn a running daemon into
+// a record we throw away.
+const BOOT_COMPARISON_MARGIN_MS = 60_000;
 
 // The endpoint of a daemon that is running and answering, or null. A record left
 // behind by a crashed daemon reads as "none", so the caller starts a new one.
@@ -160,6 +166,18 @@ export async function stopDaemon() {
     return { stopped: false, reason: 'stale', pid: info.pid };
   }
 
+  // A live pid is not an identity. daemon.json is an ordinary file that survives
+  // a reboot, pids are handed out from scratch after one, and the signal below
+  // would then go to whatever unrelated process inherited the number. A daemon
+  // answering on its debugging port is the one in the record; one that is not,
+  // and whose record predates the last boot, cannot be. Reachability alone would
+  // not do — a wedged daemon answers nothing and still has to be killable — so
+  // the two conditions are only conclusive together.
+  if (!await isReachable(info) && predatesBoot(info.startedAt)) {
+    await clearInfo();
+    return { stopped: false, reason: 'rebooted', pid: info.pid };
+  }
+
   // SIGTERM rather than SIGKILL: the daemon closes its browser on it, which is
   // what flushes the profile.
   try {
@@ -175,6 +193,14 @@ export async function stopDaemon() {
   // get that far.
   await clearInfo();
   return { stopped: true, pid: info.pid };
+}
+
+// Whether a recorded start time lies before the machine last booted, which no
+// running process's can. Unparseable reads as "cannot tell", so a record without
+// a usable timestamp is left to the checks around it rather than discarded.
+function predatesBoot(startedAt) {
+  const started = Date.parse(startedAt ?? '');
+  return Number.isFinite(started) && started < Date.now() - uptime() * 1000 - BOOT_COMPARISON_MARGIN_MS;
 }
 
 // The last few lines the daemon wrote, for reporting why a spawn failed.

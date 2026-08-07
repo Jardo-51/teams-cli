@@ -213,6 +213,10 @@ async function stop() {
   }
   if (result.reason === 'none') console.log('No Teams daemon is running.');
   else if (result.reason === 'stale') console.log('No Teams daemon is running (a leftover record was removed).');
+  else if (result.reason === 'rebooted') {
+    console.log(`No Teams daemon is running: the record was written before this machine booted, so `
+      + `pid ${result.pid} now belongs to some other process and was left alone. The record was removed.`);
+  }
   else {
     console.log(`The daemon (pid ${result.pid}) did not stop when asked — see "${LOG_PATH}".`);
     process.exit(1);
