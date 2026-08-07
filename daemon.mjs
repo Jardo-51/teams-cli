@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { openSync, closeSync } from 'node:fs';
-import { open, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -223,21 +223,26 @@ export async function tryCommandLock() {
   return null;
 }
 
+// Written to a staging file and then linked into place, rather than created
+// empty and filled in afterwards: link() fails with EEXIST atomically, so the
+// lock file never exists without its token. A reader that caught it empty could
+// not tell who holds it, would read the pid as 0, and would break the lock as
+// stale at the very moment it was being taken.
 async function writeLock(token) {
   await mkdir(DAEMON_DIR, { recursive: true });
-  let handle;
+  // One staging name per process, so two of them cannot overwrite each other's
+  // content between the write and the link.
+  const staging = `${LOCK_PATH}.${process.pid}.staging`;
   try {
-    handle = await open(LOCK_PATH, 'wx');
+    await writeFile(staging, token);
+    await link(staging, LOCK_PATH);
+    return true;
   } catch (err) {
     if (err.code === 'EEXIST') return false;
     throw err;
-  }
-  try {
-    await handle.writeFile(token);
   } finally {
-    await handle.close();
+    await unlink(staging).catch(() => {});
   }
-  return true;
 }
 
 // Removes a lock whose owning process no longer exists. The file is re-read
@@ -245,7 +250,12 @@ async function writeLock(token) {
 // examined, so a lock taken by someone else in between is not thrown away.
 async function breakStaleLock() {
   const held = await readFile(LOCK_PATH, 'utf8').catch(() => null);
-  if (held === null || isAlive(Number(held.split(':')[0]))) return false;
+  if (held === null) return false;
+  // Anything that does not name a pid counts as held: a lock this process cannot
+  // attribute is not evidence that its owner is gone, and treating it as stale
+  // is exactly how a lock gets taken away from a live command.
+  const pid = Number(held.split(':')[0]);
+  if (!Number.isInteger(pid) || pid <= 0 || isAlive(pid)) return false;
   const stillHeld = await readFile(LOCK_PATH, 'utf8').catch(() => null);
   if (stillHeld !== held) return false;
   await unlink(LOCK_PATH).catch(() => {});
