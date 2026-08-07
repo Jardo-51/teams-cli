@@ -72,7 +72,7 @@ if (!/[^\x00-\x7F]/.test(emoji)) {
   process.exit(1);
 }
 
-const { context, page } = await openTeams();
+const { page, close } = await openTeams();
 
 try {
   await waitForChatList(page);
@@ -107,7 +107,7 @@ try {
     ? `Reacted with "${emoji}" to message ${messageId} in "${resolvedName}".`
     : `Already reacted with "${emoji}" to this message — leaving it as it is.`);
 } finally {
-  await context.close();
+  await close();
 }
 
 // Gives a freshly rendered message time to render its reaction row, so that the

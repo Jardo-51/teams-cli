@@ -1,8 +1,8 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
-  openTeams, waitForChatList, openChat, scrollUp, scrollMessageIntoView, messageLocator,
-  waitForOlderHistory, viewportGoneError, paneNotScrollableError, MAX_SCROLL_STEPS,
+  openTeams, waitForChatList, openChat, scrollUp, scrollToNewest, scrollMessageIntoView,
+  messageLocator, waitForOlderHistory, viewportGoneError, paneNotScrollableError, MAX_SCROLL_STEPS,
 } from './teams.mjs';
 
 // Usage:
@@ -55,7 +55,7 @@ if (periodMs === null) {
 const cutoff = Date.now() - periodMs;
 console.log(`Reading messages since ${new Date(cutoff).toISOString()} (last ${period}).`);
 
-const { context, page } = await openTeams();
+const { page, close } = await openTeams();
 
 try {
   await waitForChatList(page);
@@ -200,16 +200,7 @@ try {
   await writeFile(outputFile, JSON.stringify(messages, null, 2) + '\n', 'utf8');
   console.log(`Wrote ${messages.length} message(s) to "${outputFile}".`);
 } finally {
-  await context.close();
-}
-
-// Jumps back to the newest messages at the bottom of the pane.
-async function scrollToNewest(page) {
-  await page.evaluate(() => {
-    const viewport = document.querySelector('[data-tid="message-pane-list-viewport"]');
-    if (viewport) viewport.scrollTop = viewport.scrollHeight;
-  });
-  await page.waitForTimeout(2500);
+  await close();
 }
 
 // Reads every message currently rendered in the pane.

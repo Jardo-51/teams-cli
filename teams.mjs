@@ -1,5 +1,8 @@
 import { chromium } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import {
+  CDP_ENDPOINT, DAEMON_ENABLED, acquireCommandLock, ensureDaemon, stopDaemon, touchActivity,
+} from './daemon.mjs';
 
 // Shared plumbing for the Teams scripts: launching a browser with a restored
 // session, and opening a chat by name.
@@ -12,6 +15,14 @@ export const PROFILE_DIR = process.env.TEAMS_PROFILE || '.profile';
 export const AUTH_PATH = process.env.TEAMS_AUTH || '.auth/user.json';
 
 const TEAMS_URL = 'https://teams.microsoft.com/v2/?ctx=chat';
+
+// How long the daemon's page gets to show its chat list before it is treated as
+// stale and reloaded. A healthy tab has it rendered already, so this only has to
+// cover a client that is busy, not one that is booting.
+const HEALTH_CHECK_TIMEOUT_MS = 15_000;
+// How long the message pane gets to settle after being scrolled to the newest
+// messages, so the virtualised list has rendered that end before it is read.
+const PANE_SETTLE_MS = 2500;
 
 // How much of the viewport height each scroll step moves. Kept below 1 so
 // consecutive rendered windows overlap and nothing falls between them.
@@ -26,11 +37,27 @@ export const MAX_SCROLL_STEPS = 300;
 // cuts the search short silently.
 const OLDER_HISTORY_GRACE_MS = 20_000;
 
-// Launches a browser on the persistent profile, restores the saved session and
-// navigates to Teams. Pass restoreAuth: false when capturing a new session.
-export async function openTeams({ headless = true, restoreAuth = true } = {}) {
+// Gives a command a Teams page to work on, plus the close() it must call when
+// it is done.
+//
+// By default that page belongs to the shared browser the daemon keeps up, which
+// is attached to over CDP and left running afterwards — booting the SPA is what
+// makes a command slow, and doing it once per burst of commands rather than once
+// per command is the whole point. Pass daemon: false to launch a browser of this
+// command's own instead: that is what the daemon itself does, what manual-login
+// needs (it must not attach to a browser that is already signed in), and what
+// TEAMS_DAEMON=0 falls back to.
+//
+// Pass restoreAuth: false when capturing a new session, and args to add
+// command-line switches to a browser being launched.
+export async function openTeams({
+  headless = true, restoreAuth = true, daemon = DAEMON_ENABLED, args = [],
+} = {}) {
+  if (daemon) return attachToDaemon();
+
   const context = await chromium.launchPersistentContext(PROFILE_DIR, {
     headless,
+    args,
     viewport: { width: 1400, height: 900 },
   });
 
@@ -41,7 +68,87 @@ export async function openTeams({ headless = true, restoreAuth = true } = {}) {
   console.log('Opening Teams...');
   await page.goto(TEAMS_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
 
-  return { context, page };
+  return { context, page, close: () => context.close() };
+}
+
+// Attaches to the daemon's browser, starting one if none is running. The command
+// lock is taken first and held until close(), so that only one command drives
+// the shared page at a time — and, because it is held across the "is a daemon
+// there?" check too, so that simultaneous commands do not both try to spawn one.
+async function attachToDaemon() {
+  const release = await acquireCommandLock();
+  let browser = null;
+  try {
+    await touchActivity();
+    browser = await connectToDaemon();
+    const context = browser.contexts()[0];
+    if (!context) {
+      throw new Error('The shared browser has no browser context — it is not the daemon\'s browser.');
+    }
+    const page = await refreshPage(context);
+    return {
+      context,
+      page,
+      // Closing a CDP connection disconnects this client and leaves the browser
+      // running — the behaviour this whole design rests on, and verified against
+      // the pinned Playwright version rather than assumed. Closing the context
+      // here would take the daemon's browser down with the first command.
+      close: async () => {
+        await browser.close().catch(() => {});
+        await touchActivity();
+        await release();
+      },
+    };
+  } catch (err) {
+    if (browser) await browser.close().catch(() => {});
+    await release();
+    throw err;
+  }
+}
+
+// Attaches to the daemon's browser, retrying once with a fresh daemon. A daemon
+// that answered the "is one there?" check can still be gone by the time we
+// connect — it exited on its idle timeout just as we arrived, or its record
+// outlived it. Retrying is what keeps that race from surfacing as a bare
+// connection error the user can do nothing with.
+async function connectToDaemon() {
+  const endpoint = await ensureDaemon();
+  try {
+    return await chromium.connectOverCDP(endpoint);
+  } catch (err) {
+    // An externally managed browser is not ours to restart.
+    if (CDP_ENDPOINT) throw err;
+    console.log('The shared browser did not accept the connection — starting a new one...');
+    // Stopped rather than merely forgotten: the recorded process may still be
+    // running but unusable, and starting a second daemon on the same profile
+    // while it is would leave two browsers writing over the same session.
+    await stopDaemon();
+    return chromium.connectOverCDP(await ensureDaemon());
+  }
+}
+
+// Puts the shared page back into the state a freshly launched browser used to
+// provide by construction. Everything a command relied on getting for free —
+// nothing open, a live session — has to be re-established here, since the
+// previous command left the page however it left it and it may have been sitting
+// there for hours since.
+async function refreshPage(context) {
+  const page = context.pages().find(p => !p.isClosed()) ?? await context.newPage();
+
+  // Whatever the last command left open: a reaction picker, a hover flyout.
+  await page.keyboard.press('Escape').catch(() => {});
+
+  try {
+    await waitForChatList(page, { timeout: HEALTH_CHECK_TIMEOUT_MS });
+  } catch {
+    // A tab that has been alive across a suspend can be signed out or wedged.
+    // Reload it once here, so that a stale daemon surfaces as one slow command
+    // rather than as a confusing failure deep inside the calling script.
+    console.log('The shared browser is not showing the chat list — reloading Teams...');
+    await page.goto(TEAMS_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await waitForChatList(page);
+  }
+  return page;
 }
 
 // Restores the full auth state — cookies plus per-origin localStorage, where
@@ -113,7 +220,23 @@ export async function openChat(page, chatName) {
   await page.locator('[data-tid="message-pane-list-viewport"]').first()
     .waitFor({ state: 'visible', timeout: 60000 });
 
+  // Every caller starts at the newest messages and works backwards. On a shared
+  // page that is not a given: reopening the chat a previous command scrolled far
+  // up can leave the pane where that command left it, and reading or reacting
+  // from the middle of the history is exactly the kind of intermittent failure
+  // that is painful to reproduce.
+  await scrollToNewest(page);
+
   return resolvedName;
+}
+
+// Jumps to the newest messages at the bottom of the pane.
+export async function scrollToNewest(page) {
+  await page.evaluate(() => {
+    const viewport = document.querySelector('[data-tid="message-pane-list-viewport"]');
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  });
+  await page.waitForTimeout(PANE_SETTLE_MS);
 }
 
 // How a message is addressed by its id — the one selector all three scripts

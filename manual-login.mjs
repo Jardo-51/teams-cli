@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { openTeams, waitForChatList, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
+import { readInfo, isAlive } from './daemon.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node manual-login.mjs
@@ -12,11 +13,26 @@ import { openTeams, waitForChatList, PROFILE_DIR, AUTH_PATH } from './teams.mjs'
 //
 // Log in manually (including MFA). Once the chat list appears the session is
 // saved automatically; you can then close the browser window.
+//
+// The daemon has to be stopped first: two browsers on one profile directory
+// write over each other's stored session, so a login captured next to a running
+// daemon is not reliably the session that survives.
+
+// Refused here rather than left to the browser, which does not reliably refuse
+// it — and, when it does, says nothing about the daemon.
+const daemon = await readInfo();
+if (daemon?.pid && isAlive(daemon.pid)) {
+  console.log(`The Teams daemon (pid ${daemon.pid}) is holding the browser profile "${PROFILE_DIR}".`);
+  console.log('Stop it first: node teams-daemon.mjs --stop');
+  process.exit(1);
+}
 
 await mkdir(dirname(AUTH_PATH), { recursive: true });
 
-// No session to restore — this is the script that creates one.
-const { context, page } = await openTeams({ headless: false, restoreAuth: false });
+// No session to restore — this is the script that creates one. It must be this
+// process's own browser, too: the daemon's is already signed in, which is the
+// opposite of what a login is for.
+const { context, page } = await openTeams({ headless: false, restoreAuth: false, daemon: false });
 
 try {
   console.log('Log in manually in the browser window that just opened.');

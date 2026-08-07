@@ -1,6 +1,7 @@
 /node_modules
 /.auth
 /.profile
+/.daemon
 
 # Exported chat history — contains real names and message bodies.
 /messages.json

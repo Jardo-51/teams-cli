@@ -17,7 +17,7 @@ if (!chatName || !message) {
   process.exit(1);
 }
 
-const { context, page } = await openTeams();
+const { page, close } = await openTeams();
 
 try {
   await waitForChatList(page);
@@ -39,5 +39,5 @@ try {
     console.log(`Sent to "${resolvedName}".`);
   }
 } finally {
-  await context.close();
+  await close();
 }
