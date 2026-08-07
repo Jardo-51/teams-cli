@@ -148,7 +148,31 @@ async function refreshPage(context) {
     await page.goto(TEAMS_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
     await waitForChatList(page);
   }
+
+  // Teams keeps the open chat's draft in the compose box, and on a shared page
+  // that draft outlives the command that typed it — a --dry-run, or a run
+  // interrupted between typing and sending. Escape does not clear a CKEditor, so
+  // the next post would be typed onto the end of it and sent as one message.
+  const composer = composerLocator(page);
+  if (await composer.isVisible().catch(() => false)) await clearComposer(composer);
+
   return page;
+}
+
+// The compose box (a CKEditor contenteditable). Named in one place because both
+// the command that types into it and the page reset that empties it need it.
+export function composerLocator(page) {
+  return page.locator(
+    '[data-tid="ckeditor"] [contenteditable="true"], div[role="textbox"][contenteditable="true"], [contenteditable="true"][data-tid="ckeditor"]'
+  ).first();
+}
+
+// Empties the compose box. Select-all and delete rather than fill(): CKEditor
+// keeps its own model, so writing the element's text does not reach it.
+export async function clearComposer(composer) {
+  await composer.click();
+  await composer.press('ControlOrMeta+A');
+  await composer.press('Backspace');
 }
 
 // Restores the full auth state — cookies plus per-origin localStorage, where
