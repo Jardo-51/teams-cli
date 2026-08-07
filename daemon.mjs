@@ -99,6 +99,12 @@ async function startDaemon() {
     stdio: ['ignore', logFd, logFd],
   });
   let exitCode = null;
+  // An 'error' event with no listener is rethrown by the emitter, on a later
+  // tick — outside the try that would have released the command lock, so the
+  // fork failing under load (EAGAIN, EMFILE) would leave the lock behind and
+  // say nothing about the daemon. 'error' and 'spawn' are mutually exclusive,
+  // so only one of these ever closes the log handle.
+  child.on('error', (err) => { exitCode = err.message; closeSync(logFd); });
   child.on('exit', (code, signal) => { exitCode = code ?? signal; });
   child.on('spawn', () => closeSync(logFd));
   child.unref();
