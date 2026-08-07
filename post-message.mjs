@@ -21,9 +21,7 @@ const { page, close } = await openTeams();
 
 try {
   await waitForChatList(page);
-  // Posting only touches the compose box, so where the message pane sits is
-  // neither read nor worth waiting for.
-  const resolvedName = await openChat(page, chatName, { atNewest: false });
+  const resolvedName = await openChat(page, chatName);
 
   const composer = composerLocator(page);
   await composer.waitFor({ state: 'visible', timeout: 30000 });

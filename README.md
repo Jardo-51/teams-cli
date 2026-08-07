@@ -168,6 +168,10 @@ Worth knowing:
   re-authentication your tenant enforces anyway.
 - **Commands run one at a time.** They share a single page, so a second command
   waits for the first to finish rather than driving the same page with it.
+- **There is one daemon per working directory.** The profile and the daemon's
+  bookkeeping are both relative paths by default, so commands run from another
+  directory get their own daemon and their own profile rather than sharing these.
+  Set `TEAMS_PROFILE` and `TEAMS_DAEMON_DIR` to absolute paths to share one.
 - **`TEAMS_DAEMON=0` turns all of this off**, giving each command its own browser
   and its own cold boot, as before.
 - The daemon's log and its bookkeeping live in `$TEAMS_DAEMON_DIR` (default

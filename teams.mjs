@@ -266,12 +266,7 @@ export async function waitForChatList(page, { timeout = 120000 } = {}) {
 
 // Opens the chat whose name matches chatName (partial, case-insensitive) and
 // returns the name it resolved to.
-//
-// atNewest puts the message pane back at the newest messages before returning.
-// The two commands that walk the history need that; the one that only types into
-// the compose box does not, and it is the fastest command in a change whose
-// whole subject is latency, so it does not pay the settle.
-export async function openChat(page, chatName, { atNewest = true } = {}) {
+export async function openChat(page, chatName) {
   console.log(`Looking for chat: "${chatName}"`);
 
   // Group headers (e.g. "Favorites", "Chats") are also treeitems that CONTAIN
@@ -307,7 +302,15 @@ export async function openChat(page, chatName, { atNewest = true } = {}) {
   // previous command scrolled far up can leave the pane where that command left
   // it, and reading or reacting from the middle of the history is exactly the
   // kind of intermittent failure that is painful to reproduce.
-  if (atNewest) await scrollToNewest(page);
+  //
+  // The settle inside this is also the only thing separating the click above
+  // from what the caller does next, and on a shared page that matters even to a
+  // caller with no interest in the scroll position: the wait above is for the
+  // first *visible* viewport, which — when the browser already had another chat
+  // open — is the outgoing one, and the compose box picked straight after it
+  // could still belong to the previous chat. So every caller pays it, including
+  // the one that only types.
+  await scrollToNewest(page);
 
   return resolvedName;
 }
