@@ -266,7 +266,12 @@ export async function waitForChatList(page, { timeout = 120000 } = {}) {
 
 // Opens the chat whose name matches chatName (partial, case-insensitive) and
 // returns the name it resolved to.
-export async function openChat(page, chatName) {
+//
+// atNewest puts the message pane back at the newest messages before returning.
+// The two commands that walk the history need that; the one that only types into
+// the compose box does not, and it is the fastest command in a change whose
+// whole subject is latency, so it does not pay the settle.
+export async function openChat(page, chatName, { atNewest = true } = {}) {
   console.log(`Looking for chat: "${chatName}"`);
 
   // Group headers (e.g. "Favorites", "Chats") are also treeitems that CONTAIN
@@ -297,12 +302,12 @@ export async function openChat(page, chatName) {
   await page.locator('[data-tid="message-pane-list-viewport"]').first()
     .waitFor({ state: 'visible', timeout: 60000 });
 
-  // Every caller starts at the newest messages and works backwards. On a shared
-  // page that is not a given: reopening the chat a previous command scrolled far
-  // up can leave the pane where that command left it, and reading or reacting
-  // from the middle of the history is exactly the kind of intermittent failure
-  // that is painful to reproduce.
-  await scrollToNewest(page);
+  // Callers that read the history start at the newest messages and work
+  // backwards. On a shared page that is not a given: reopening the chat a
+  // previous command scrolled far up can leave the pane where that command left
+  // it, and reading or reacting from the middle of the history is exactly the
+  // kind of intermittent failure that is painful to reproduce.
+  if (atNewest) await scrollToNewest(page);
 
   return resolvedName;
 }
