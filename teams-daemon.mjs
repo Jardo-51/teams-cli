@@ -30,8 +30,15 @@ const PORT_FILE_TIMEOUT_MS = 10_000;
 const args = process.argv.slice(2);
 const known = ['--stop', '--status', '--headed'];
 const unknownFlag = args.find(a => !known.includes(a));
-if (unknownFlag) {
-  console.log(`Unknown option "${unknownFlag}".`);
+// The three flags select between three different things to do, so a combination
+// of them has no reading that is obviously right — "--status --stop" would stop
+// the daemon and never print the status that was asked for. Refused for the same
+// reason the unknown-flag check above exists.
+const modes = args.filter(a => a === '--stop' || a === '--status');
+const conflict = modes.length > 1 || (modes.length === 1 && args.includes('--headed'));
+if (unknownFlag || conflict) {
+  if (unknownFlag) console.log(`Unknown option "${unknownFlag}".`);
+  else console.log(`Cannot combine ${args.filter(a => known.includes(a)).join(' and ')}.`);
   console.log('Usage: node teams-daemon.mjs [--headed] | --stop | --status');
   process.exit(1);
 }
