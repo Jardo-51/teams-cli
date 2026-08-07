@@ -15,6 +15,9 @@ export const PROFILE_DIR = process.env.TEAMS_PROFILE || '.profile';
 export const AUTH_PATH = process.env.TEAMS_AUTH || '.auth/user.json';
 
 const TEAMS_URL = 'https://teams.microsoft.com/v2/?ctx=chat';
+// What a Teams tab's URL begins with, for picking it out of the shared browser's
+// pages. The path is rewritten by the SPA as it is navigated; the origin is not.
+const TEAMS_ORIGIN = 'https://teams.microsoft.com/';
 
 // How long the daemon's page gets to show its chat list before it is treated as
 // stale and reloaded. A healthy tab has it rendered already, so this only has to
@@ -145,20 +148,34 @@ async function connectToDaemon() {
 // previous command left the page however it left it and it may have been sitting
 // there for hours since.
 async function refreshPage(context) {
-  const page = context.pages().find(p => !p.isClosed()) ?? await context.newPage();
+  const open = context.pages().filter(p => !p.isClosed());
+  // Picked by URL rather than by position: on a browser the command had just
+  // launched itself, the first page was the Teams tab by construction, which a
+  // browser that outlives the command no longer gives us. A consent popup, a
+  // "continue in the desktop app" window or a link a previous run followed can
+  // sit in front of it — and the reload below would then navigate that popup
+  // and leave the signed-in tab open beside it.
+  const teams = open.find(p => p.url().startsWith(TEAMS_ORIGIN));
+  // Anything else open is reused rather than replaced with a fresh tab, so that
+  // a signed-in tab caught mid-redirect through the login origin is navigated
+  // back to Teams instead of being abandoned for a second one.
+  const page = teams ?? open[0] ?? await context.newPage();
+  // Nothing in the daemon ever closes a page, so a stray left here stays for the
+  // daemon's whole life and is a candidate again on every command after this.
+  for (const stray of open) if (stray !== page) await stray.close().catch(() => {});
 
   // Whatever the last command left open: a reaction picker, a hover flyout.
   await page.keyboard.press('Escape').catch(() => {});
 
-  try {
-    await waitForChatList(page, { timeout: HEALTH_CHECK_TIMEOUT_MS });
-  } catch {
+  if (!teams) {
+    console.log('The shared browser has no Teams tab — opening one...');
+    await loadTeams(page);
+  } else if (!await showsChatList(page)) {
     // A tab that has been alive across a suspend can be signed out or wedged.
     // Reload it once here, so that a stale daemon surfaces as one slow command
     // rather than as a confusing failure deep inside the calling script.
     console.log('The shared browser is not showing the chat list — reloading Teams...');
-    await page.goto(TEAMS_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
-    await waitForChatList(page);
+    await loadTeams(page);
   }
 
   // Teams keeps the open chat's draft in the compose box, and on a shared page
@@ -169,6 +186,17 @@ async function refreshPage(context) {
   if (await composer.isVisible().catch(() => false)) await clearComposer(composer);
 
   return page;
+}
+
+// Whether the page has the chat list up right now. A healthy tab has it
+// rendered already, so this is a health check rather than a wait for a boot.
+function showsChatList(page) {
+  return waitForChatList(page, { timeout: HEALTH_CHECK_TIMEOUT_MS }).then(() => true, () => false);
+}
+
+async function loadTeams(page) {
+  await page.goto(TEAMS_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await waitForChatList(page);
 }
 
 // The compose box (a CKEditor contenteditable). Named in one place because both
