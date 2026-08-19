@@ -1,4 +1,4 @@
-import { openTeams, waitForChatList, openChat } from './teams.mjs';
+import { openTeams, waitForChatList, openChat, composerLocator, clearComposer } from './teams.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node post-message.mjs "<chat name>" "<message>" [--dry-run]
@@ -17,18 +17,24 @@ if (!chatName || !message) {
   process.exit(1);
 }
 
-const { context, page } = await openTeams();
+const { page, close } = await openTeams();
 
 try {
   await waitForChatList(page);
-  const resolvedName = await openChat(page, chatName);
+  // Posting never reads the message pane, so it does not wait for the pane to
+  // settle at the newest end. What makes this safe is openChat confirming the
+  // switch itself — the compose box of the chat being left stays visible for
+  // most of a second, and typing into that one would post to the wrong chat.
+  const resolvedName = await openChat(page, chatName, { atNewest: false });
 
-  // Locate the compose box (CKEditor contenteditable).
-  const composer = page.locator(
-    '[data-tid="ckeditor"] [contenteditable="true"], div[role="textbox"][contenteditable="true"], [contenteditable="true"][data-tid="ckeditor"]'
-  ).first();
+  const composer = composerLocator(page);
   await composer.waitFor({ state: 'visible', timeout: 30000 });
-  await composer.click();
+  // Typing puts the text at the caret, so anything already in the box becomes
+  // part of the message that goes out. The page reset clears the draft of the
+  // chat the previous command left open; this covers the rest — a draft Teams
+  // itself synced in from another client, or one in a chat this page has not
+  // had open. Nothing typed here is worth risking a wrong message for.
+  await clearComposer(composer);
   await composer.type(message, { delay: 15 });
 
   if (dryRun) {
@@ -39,5 +45,5 @@ try {
     console.log(`Sent to "${resolvedName}".`);
   }
 } finally {
-  await context.close();
+  await close();
 }

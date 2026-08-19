@@ -30,6 +30,11 @@ list appears the session is saved automatically and you can close the window.
 nix develop .#playwright --command node manual-login.mjs
 ```
 
+Stop the [browser daemon](#the-browser-daemon) first if it is running
+(`node teams-daemon.mjs --stop`) — two browsers on one profile write over each
+other's stored session. The login script refuses to open a window rather than
+letting that happen.
+
 ### 2. Post a message
 
 Posts a message into the chat whose name matches `<chat name>` (partial,
@@ -128,6 +133,51 @@ old message takes as long as reading that far back. Reacting is a toggle in
 Teams, so a reaction you already left is never clicked again — that would take
 it back; such a run reports the existing reaction and changes nothing.
 
+## The browser daemon
+
+Booting the Teams web app — bootstrapping, refreshing tokens, rendering the chat
+list — takes far longer than the work any of the commands then do. So the
+commands share one browser instead of each launching their own: the first one to
+run starts a background daemon holding a signed-in Teams tab, and every command
+after it attaches to that tab over CDP and leaves it running.
+
+This needs no setup. Run the commands as documented above; the first one after a
+while is as slow as they all used to be, and the rest are not.
+
+The daemon exits by itself after 15 minutes without a command
+(`TEAMS_DAEMON_IDLE`), so a burst of commands costs one boot and nothing is left
+running overnight. It can also be driven by hand:
+
+```bash
+nix develop .#playwright --command node teams-daemon.mjs --status
+nix develop .#playwright --command node teams-daemon.mjs --stop
+nix develop .#playwright --command node teams-daemon.mjs            # start in the foreground
+nix develop .#playwright --command node teams-daemon.mjs --headed   # ...with a visible window, for debugging
+```
+
+Worth knowing:
+
+- **You show as Available while it runs.** A connected Teams client is a
+  connected Teams client, and other people can see it. That is what the idle
+  timeout is for; `TEAMS_DAEMON_IDLE=0` keeps the daemon up until it is stopped.
+- **Stop it before `manual-login.mjs`.** Two browsers sharing one profile
+  directory write over each other's stored session, so the login script refuses
+  to run while the daemon is up. A running daemon should mean logging in *less*
+  often, though — the
+  live tab keeps refreshing its own tokens, subject to whatever
+  re-authentication your tenant enforces anyway.
+- **Commands run one at a time.** They share a single page, so a second command
+  waits for the first to finish rather than driving the same page with it.
+- **There is one daemon per working directory.** The profile and the daemon's
+  bookkeeping are both relative paths by default, so commands run from another
+  directory get their own daemon and their own profile rather than sharing these.
+  Set `TEAMS_PROFILE` and `TEAMS_DAEMON_DIR` to absolute paths to share one.
+- **`TEAMS_DAEMON=0` turns all of this off**, giving each command its own browser
+  and its own cold boot, as before.
+- The daemon's log and its bookkeeping live in `$TEAMS_DAEMON_DIR` (default
+  `.daemon/`, git-ignored). `.daemon/daemon.log` is where a daemon that failed to
+  start explains itself.
+
 ## How auth works
 
 A persistent browser profile (`$TEAMS_PROFILE`, default `.profile`) holds
@@ -137,16 +187,27 @@ session (cookies + per-origin localStorage) to a storageState file
 (`$TEAMS_AUTH`, default `.auth/user.json`), which the other scripts restore
 before navigating.
 
-`teams.mjs` holds what the scripts share — launching the browser with that
-restored session, finding and opening a chat by name, and scrolling the message
-pane back through the history — so each script only contains its own logic.
+`teams.mjs` holds what the scripts share — obtaining a Teams page (from the
+daemon, or from a browser of the command's own), finding and opening a chat by
+name, and scrolling the message pane back through the history — so each script
+only contains its own logic. `daemon.mjs` is the client side of the daemon:
+finding it, starting it, and serialising commands against it.
 
 ## Configuration
 
-| Variable        | Default            | Description                          |
-| --------------- | ------------------ | ------------------------------------ |
-| `TEAMS_PROFILE` | `.profile`         | Persistent browser profile directory |
-| `TEAMS_AUTH`    | `.auth/user.json`  | Playwright storageState (auth) file   |
+| Variable             | Default           | Description                                                     |
+| -------------------- | ----------------- | --------------------------------------------------------------- |
+| `TEAMS_PROFILE`      | `.profile`        | Persistent browser profile directory                              |
+| `TEAMS_AUTH`         | `.auth/user.json` | Playwright storageState (auth) file                               |
+| `TEAMS_DAEMON`       | `1`               | Set to `0` to give every command its own browser                  |
+| `TEAMS_DAEMON_IDLE`  | `15`              | Whole minutes without a command before the daemon exits; `0` never |
+| `TEAMS_DAEMON_PORT`  | `0`               | Debugging port for the daemon's browser; `0` picks a free one     |
+| `TEAMS_DAEMON_DIR`   | `.daemon`         | Where the daemon's record, log and command lock are kept          |
+| `TEAMS_CDP`          | —                 | Attach to this CDP endpoint instead of managing a daemon          |
 
 Both `.profile/` and `.auth/` contain login credentials and are git-ignored —
 do not commit them.
+
+The debugging port is bound on `127.0.0.1` only, but anything that can reach it
+can drive the signed-in browser, so leave `TEAMS_DAEMON_PORT` unset unless you
+have a reason to fix it.
