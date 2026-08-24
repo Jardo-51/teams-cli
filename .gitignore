@@ -3,6 +3,9 @@
 /.profile
 /.daemon
 
+# Login credentials for auto-login.mjs.
+/.env
+
 # Exported chat history — contains real names and message bodies.
 /messages.json
 /export/
