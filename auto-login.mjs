@@ -149,8 +149,16 @@ try {
   await page.getByRole('textbox', { name: 'Enter code' }).fill(code);
   await page.getByRole('button', { name: 'Verify' }).click();
 
-  console.log('Waiting for the chat list to appear (up to 10 minutes)...');
-  await waitForChatList(page, { timeout: 600000 });
+  // Entra ID may interpose a "Stay signed in?" prompt between MFA and the SPA.
+  // It blocks the redirect to Teams, and a headless run has nobody to click it,
+  // so answer it here. Tenants that do not show it simply have nothing to click.
+  await page.getByRole('button', { name: 'Yes' }).click({ timeout: 15000 }).catch(() => {});
+
+  // Everything from here on is machine work — the human input is already done —
+  // so the budget is far shorter than manual-login.mjs's, which has to cover
+  // someone typing at the keyboard. Failing fast beats hanging with no output.
+  console.log('Waiting for the chat list to appear (up to 2 minutes)...');
+  await waitForChatList(page, { timeout: 120000 });
 
   // Capture the session once (this briefly opens a page per origin to read
   // localStorage — expected, and it only happens this one time).
