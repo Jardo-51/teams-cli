@@ -190,10 +190,9 @@ Worth knowing:
 - **Stop it before logging in.** Two browsers sharing one profile directory
   write over each other's stored session, so `manual-login.mjs` and
   `auto-login.mjs` both refuse to run while the daemon is up. A running daemon
-  should mean logging in *less*
-  often, though — the
-  live tab keeps refreshing its own tokens, subject to whatever
-  re-authentication your tenant enforces anyway.
+  should mean logging in *less* often, though — the live tab keeps refreshing
+  its own tokens, subject to whatever re-authentication your tenant enforces
+  anyway.
 - **Commands run one at a time.** They share a single page, so a second command
   waits for the first to finish rather than driving the same page with it.
 - **There is one daemon per working directory.** The profile and the daemon's
