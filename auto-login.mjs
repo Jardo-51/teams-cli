@@ -166,57 +166,67 @@ async function submitCode(page, codeInput) {
 try {
   console.log(`Signing in as ${email}...`);
 
-  // The account picker lists remembered accounts by email; a fresh profile
-  // shows an email textbox instead. Handle both so the script does not depend
-  // on the profile having been used before.
+  // Three ways the profile can land here. The account picker lists remembered
+  // accounts by email and a fresh profile shows an email textbox instead — but
+  // a profile whose tokens are still good is waved straight through to the chat
+  // list, since only the session cookies are dropped when it is reopened. That
+  // third landing is not a failure, it is the state this run is trying to reach,
+  // so it goes to the capture rather than waiting out a sign-in form that is
+  // never going to appear.
   const accountTile = page.locator(`[data-test-id="${email}"]`);
   const emailInput = page.getByRole('textbox', { name: /email|someone@example/i });
-  await Promise.race([
-    accountTile.waitFor({ state: 'visible', timeout: 60000 }),
-    emailInput.waitFor({ state: 'visible', timeout: 60000 }),
-  ]);
-  if (await accountTile.isVisible()) {
-    await accountTile.click();
-  } else {
-    await emailInput.fill(email);
-    await page.getByRole('button', { name: 'Next' }).click();
-  }
-
-  await page.getByRole('textbox', { name: 'Enter the password for' }).fill(password);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-
-  // A rejected password never reaches the MFA step: the page stays where it is
-  // with an error banner. Race that banner against the two shapes the MFA step
-  // can take, so a wrong value in ".env" is reported as a wrong value instead
-  // of surfacing later as a timeout on a locator that has nothing to do with it.
-  const passwordError = page.locator('#passwordError');
-  const anotherWay = page.getByRole('link', { name: 'Sign in another way' });
-  const codeInput = page.getByRole('textbox', { name: 'Enter code' });
-  const step = await firstVisible(
-    { 'password error': passwordError, 'method choice': anotherWay, 'code entry': codeInput },
+  const chatList = page.getByRole('treeitem').first();
+  const landing = await firstVisible(
+    { 'account tile': accountTile, 'email box': emailInput, 'chat list': chatList },
     60000,
   );
-  if (step === 'password error') {
-    throw new Error(`Sign-in was rejected: ${(await passwordError.innerText()).trim()}`);
+
+  if (landing === 'chat list') {
+    console.log('The profile is still signed in — no credentials or MFA needed.');
+  } else {
+    if (landing === 'account tile') {
+      await accountTile.click();
+    } else {
+      await emailInput.fill(email);
+      await page.getByRole('button', { name: 'Next' }).click();
+    }
+
+    await page.getByRole('textbox', { name: 'Enter the password for' }).fill(password);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+
+    // A rejected password never reaches the MFA step: the page stays where it is
+    // with an error banner. Race that banner against the two shapes the MFA step
+    // can take, so a wrong value in ".env" is reported as a wrong value instead
+    // of surfacing later as a timeout on a locator unrelated to the cause.
+    const passwordError = page.locator('#passwordError');
+    const anotherWay = page.getByRole('link', { name: 'Sign in another way' });
+    const codeInput = page.getByRole('textbox', { name: 'Enter code' });
+    const step = await firstVisible(
+      { 'password error': passwordError, 'method choice': anotherWay, 'code entry': codeInput },
+      60000,
+    );
+    if (step === 'password error') {
+      throw new Error(`Sign-in was rejected: ${(await passwordError.innerText()).trim()}`);
+    }
+
+    // Choose SMS as the verification method. The link is only offered when the
+    // account has more than one method registered — with text as the only or
+    // default method, Entra ID goes straight to the code-entry page. The phone
+    // button's name carries a masked number that differs per account, so match
+    // on the "Text" prefix.
+    if (step === 'method choice') {
+      await anotherWay.click();
+      await page.getByRole('button', { name: /^Text/ }).click();
+    }
+
+    console.log('An MFA code has been sent to your phone.');
+    await submitCode(page, codeInput);
+
+    // Entra ID may interpose a "Stay signed in?" prompt between MFA and the SPA.
+    // It blocks the redirect to Teams, and a headless run has nobody to click
+    // it, so answer it here. Tenants that do not show it have nothing to click.
+    await page.getByRole('button', { name: 'Yes' }).click({ timeout: 15000 }).catch(() => {});
   }
-
-  // Choose SMS as the verification method. The link is only offered when the
-  // account has more than one method registered — with text as the only or
-  // default method, Entra ID goes straight to the code-entry page. The phone
-  // button's name carries a masked number that differs per account, so match on
-  // the "Text" prefix.
-  if (step === 'method choice') {
-    await anotherWay.click();
-    await page.getByRole('button', { name: /^Text/ }).click();
-  }
-
-  console.log('An MFA code has been sent to your phone.');
-  await submitCode(page, codeInput);
-
-  // Entra ID may interpose a "Stay signed in?" prompt between MFA and the SPA.
-  // It blocks the redirect to Teams, and a headless run has nobody to click it,
-  // so answer it here. Tenants that do not show it simply have nothing to click.
-  await page.getByRole('button', { name: 'Yes' }).click({ timeout: 15000 }).catch(() => {});
 
   // Everything from here on is machine work — the human input is already done —
   // so the budget is far shorter than manual-login.mjs's, which has to cover
