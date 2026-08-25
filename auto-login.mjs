@@ -118,16 +118,46 @@ async function firstVisible(locators, timeout) {
   }
 }
 
-// Asks for the MFA code on the console. Kept until Verify is clicked so a
-// mistyped code can be retried without restarting the whole login.
-async function promptForCode() {
+// How many times a rejected MFA code may be re-entered before giving up. The
+// alternative to re-prompting is a whole new login and a fresh text message, so
+// a mistyped digit should not cost that — but the loop must not run forever
+// either, since "still on the code page" is also what a stuck page looks like.
+const MAX_CODE_ATTEMPTS = 3;
+
+// Asks for the MFA code on the console, submits it, and re-prompts while the
+// code-entry page is still showing. The readline interface is deliberately held
+// open across the Verify click, which is what makes the retry possible.
+async function submitCode(page, codeInput) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    let code = '';
-    while (!code) {
-      code = (await rl.question('Enter the MFA code sent to your phone: ')).trim();
+    for (let attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
+      let code = '';
+      while (!code) {
+        code = (await rl.question('Enter the MFA code sent to your phone: ')).trim();
+      }
+      await codeInput.fill(code);
+      await page.getByRole('button', { name: 'Verify' }).click();
+
+      // An accepted code navigates away from the code-entry page; a rejected one
+      // leaves the box in place and raises an error beside it. Waiting for the
+      // first of the two catches a wrong digit immediately, while still giving a
+      // slow-but-accepted verification room to finish. Neither signal inside the
+      // budget is treated as a rejection, which costs a re-prompt at worst.
+      // Empty alert regions are excluded, since a live region that is merely
+      // present is not an error.
+      const codeError = page.getByRole('alert').filter({ hasText: /\S/ }).first();
+      const accepted = await Promise.any([
+        codeInput.waitFor({ state: 'hidden', timeout: 60000 }).then(() => true),
+        codeError.waitFor({ state: 'visible', timeout: 60000 }).then(() => false),
+      ]).catch(() => false);
+
+      // The alert may have been about something other than the code, so let the
+      // code box have the last word: gone means we are through regardless.
+      if (accepted || !(await codeInput.isVisible().catch(() => false))) return;
+
+      console.log('That code was not accepted. Check the message and try again.');
     }
-    return code;
+    throw new Error(`The MFA code was not accepted after ${MAX_CODE_ATTEMPTS} attempts.`);
   } finally {
     rl.close();
   }
@@ -181,9 +211,7 @@ try {
   }
 
   console.log('An MFA code has been sent to your phone.');
-  const code = await promptForCode();
-  await page.getByRole('textbox', { name: 'Enter code' }).fill(code);
-  await page.getByRole('button', { name: 'Verify' }).click();
+  await submitCode(page, codeInput);
 
   // Entra ID may interpose a "Stay signed in?" prompt between MFA and the SPA.
   // It blocks the redirect to Teams, and a headless run has nobody to click it,
