@@ -39,6 +39,7 @@ the scripts; copy the template and fill it in:
 
 ```bash
 cp .env.example .env
+chmod 600 .env   # it holds a password in plain text
 # then edit .env:
 #   TEAMS_EMAIL=you@example.com
 #   TEAMS_PASSWORD=your-password
