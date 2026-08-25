@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { fileURLToPath } from 'node:url';
 import { beginLogin, waitForChatList, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
 
 // Usage:
@@ -64,11 +66,17 @@ async function readEnvFile(path) {
   return env;
 }
 
-const env = await readEnvFile('.env');
+// Resolved against this script rather than the working directory, so the file
+// really is the one "next to this script" that the comment above and the README
+// both promise — running the script by absolute path from elsewhere finds it
+// just the same.
+const ENV_PATH = join(dirname(fileURLToPath(import.meta.url)), '.env');
+
+const env = await readEnvFile(ENV_PATH);
 const email = env.TEAMS_EMAIL;
 const password = env.TEAMS_PASSWORD;
 if (!email || !password) {
-  console.error('".env" must define both TEAMS_EMAIL and TEAMS_PASSWORD.');
+  console.error(`"${ENV_PATH}" must define both TEAMS_EMAIL and TEAMS_PASSWORD.`);
   process.exit(1);
 }
 
