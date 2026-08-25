@@ -33,18 +33,16 @@ import { beginLogin, waitForChatList, PROFILE_DIR, AUTH_PATH } from './teams.mjs
 // "export " and surrounding quotes are stripped so the file also works when
 // sourced by a shell. Values are trimmed, so a value with leading or trailing
 // spaces has to be quoted — which .env.example says.
+//
+// A missing file is reported as null rather than thrown, so that the caller can
+// present it the same way as the other configuration mistakes: a setup step the
+// user has not done yet is not a bug, and does not want a stack trace.
 async function readEnvFile(path) {
   let raw;
   try {
     raw = await readFile(path, 'utf8');
   } catch (err) {
-    if (err.code === 'ENOENT') {
-      throw new Error(
-        `Credentials file "${path}" not found. Create it with:\n` +
-          '  TEAMS_EMAIL=you@example.com\n' +
-          '  TEAMS_PASSWORD=your-password',
-      );
-    }
+    if (err.code === 'ENOENT') return null;
     throw err;
   }
 
@@ -74,6 +72,15 @@ async function readEnvFile(path) {
 const ENV_PATH = join(dirname(fileURLToPath(import.meta.url)), '.env');
 
 const env = await readEnvFile(ENV_PATH);
+if (!env) {
+  console.error(
+    `Credentials file "${ENV_PATH}" not found. Create it with:\n` +
+      '  TEAMS_EMAIL=you@example.com\n' +
+      '  TEAMS_PASSWORD=your-password',
+  );
+  process.exit(1);
+}
+
 const email = env.TEAMS_EMAIL;
 const password = env.TEAMS_PASSWORD;
 if (!email || !password) {
