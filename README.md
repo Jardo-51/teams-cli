@@ -215,9 +215,10 @@ localStorage) to a storageState file (`$TEAMS_AUTH`, default `.auth/user.json`),
 which the other scripts restore before navigating.
 
 `teams.mjs` holds what the scripts share — obtaining a Teams page (from the
-daemon, or from a browser of the command's own), finding and opening a chat by
-name, and scrolling the message pane back through the history — so each script
-only contains its own logic. `daemon.mjs` is the client side of the daemon:
+daemon, or from a browser of the command's own), the preamble both login scripts
+run before they can open a browser, finding and opening a chat by name, and
+scrolling the message pane back through the history — so each script only
+contains its own logic. `daemon.mjs` is the client side of the daemon:
 finding it, starting it, and serialising commands against it.
 
 ## Configuration
