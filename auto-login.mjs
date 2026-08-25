@@ -31,7 +31,8 @@ import { beginLogin, waitForChatList, PROFILE_DIR, AUTH_PATH } from './teams.mjs
 // small — only the two keys this script needs — rather than pulling in a
 // dependency. Lines that are blank or start with "#" are ignored; a leading
 // "export " and surrounding quotes are stripped so the file also works when
-// sourced by a shell.
+// sourced by a shell. Values are trimmed, so a value with leading or trailing
+// spaces has to be quoted — which .env.example says.
 async function readEnvFile(path) {
   let raw;
   try {
