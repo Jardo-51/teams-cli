@@ -46,7 +46,8 @@ cp .env.example .env
 
 The one-time MFA code cannot be known ahead of time, so once it is sent to your
 phone you are asked to type it into the console. The browser closes by itself
-once the session is saved.
+once the session is saved. Text-message MFA is the only method this script
+drives — an account with no phone method registered has to log in manually.
 
 ```bash
 nix develop .#playwright --command node auto-login.mjs

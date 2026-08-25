@@ -15,7 +15,9 @@ import { acquireCommandLock, connectableDaemon } from './daemon.mjs';
 //   TEAMS_PASSWORD=your-password
 //
 // The MFA one-time code cannot be known ahead of time, so once the code is
-// sent you are asked to type it into the console.
+// sent you are asked to type it into the console. Text-message MFA is the only
+// method driven here; an account with no phone method registered has to use
+// manual-login.mjs.
 //
 // Runs headless using the persistent profile. Because a persistent profile
 // drops session cookies when reopened (and not all tenants offer "Stay signed
@@ -102,6 +104,20 @@ await mkdir(dirname(AUTH_PATH), { recursive: true });
 // opposite of what a login is for.
 const { context, page } = await openTeams({ headless: true, restoreAuth: false, daemon: false });
 
+// Waits for whichever of the given locators becomes visible first and returns
+// its key. Every wait is subscribed to, so the ones that lose the race do not
+// reject unobserved once their own timeout expires.
+async function firstVisible(locators, timeout) {
+  const names = Object.keys(locators);
+  try {
+    return await Promise.any(
+      names.map((name) => locators[name].waitFor({ state: 'visible', timeout }).then(() => name)),
+    );
+  } catch {
+    throw new Error(`Timed out after ${timeout} ms — none of these appeared: ${names.join(', ')}.`);
+  }
+}
+
 // Asks for the MFA code on the console. Kept until Verify is clicked so a
 // mistyped code can be retried without restarting the whole login.
 async function promptForCode() {
@@ -139,10 +155,30 @@ try {
   await page.getByRole('textbox', { name: 'Enter the password for' }).fill(password);
   await page.getByRole('button', { name: 'Sign in' }).click();
 
-  // Choose SMS as the verification method. The phone button's name carries a
-  // masked number that differs per account, so match on the "Text" prefix.
-  await page.getByRole('link', { name: 'Sign in another way' }).click();
-  await page.getByRole('button', { name: /^Text/ }).click();
+  // A rejected password never reaches the MFA step: the page stays where it is
+  // with an error banner. Race that banner against the two shapes the MFA step
+  // can take, so a wrong value in ".env" is reported as a wrong value instead
+  // of surfacing later as a timeout on a locator that has nothing to do with it.
+  const passwordError = page.locator('#passwordError');
+  const anotherWay = page.getByRole('link', { name: 'Sign in another way' });
+  const codeInput = page.getByRole('textbox', { name: 'Enter code' });
+  const step = await firstVisible(
+    { 'password error': passwordError, 'method choice': anotherWay, 'code entry': codeInput },
+    60000,
+  );
+  if (step === 'password error') {
+    throw new Error(`Sign-in was rejected: ${(await passwordError.innerText()).trim()}`);
+  }
+
+  // Choose SMS as the verification method. The link is only offered when the
+  // account has more than one method registered — with text as the only or
+  // default method, Entra ID goes straight to the code-entry page. The phone
+  // button's name carries a masked number that differs per account, so match on
+  // the "Text" prefix.
+  if (step === 'method choice') {
+    await anotherWay.click();
+    await page.getByRole('button', { name: /^Text/ }).click();
+  }
 
   console.log('An MFA code has been sent to your phone.');
   const code = await promptForCode();
