@@ -317,8 +317,13 @@ export async function pasteIntoComposer(composer, text) {
       { el: handle, wanted: expected },
       { timeout: 10000 },
     );
-  } catch {
-    throw new Error('The message never appeared in the compose box.');
+  } catch (cause) {
+    // The friendly wording covers the case worth naming, but it is not the only
+    // way out of that wait — a closed page, a detached frame or a mistake in the
+    // predicate itself all land here too, and relabelling those would turn a
+    // stack trace into a confident wrong diagnosis. The cause carries the real
+    // one, including whether the wait timed out or failed at once.
+    throw new Error('The message never appeared in the compose box.', { cause });
   } finally {
     await handle.dispose();
   }
