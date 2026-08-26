@@ -23,16 +23,43 @@ the browsers.
 
 ### 1. Log in
 
-Opens Teams in a visible browser. Log in manually (including MFA); once the chat
-list appears the session is saved automatically and you can close the window.
+There are two ways to capture a session. Both save the same thing; pick whichever
+suits you.
+
+**Manual.** Opens Teams in a visible browser. Log in by hand (including MFA); once
+the chat-list appears the session is saved automatically and you can close the window.
 
 ```bash
 nix develop .#playwright --command node manual-login.mjs
 ```
 
-Stop the [browser daemon](#the-browser-daemon) first if it is running
+**Automatic.** Fills the account, password and MFA method for you and runs
+headless. The email and password are read from a git-ignored `.env` file next to
+the scripts; copy the template and fill it in:
+
+```bash
+cp .env.example .env
+chmod 600 .env   # it holds a password in plain text
+# then edit .env:
+#   TEAMS_EMAIL=you@example.com
+#   TEAMS_PASSWORD=your-password
+```
+
+The one-time MFA code cannot be known ahead of time, so once it is sent to your
+phone you are asked to type it into the console. The browser closes by itself
+once the session is saved. Text-message MFA is the only method this script
+drives — an account with no phone method registered has to log in manually.
+
+```bash
+nix develop .#playwright --command node auto-login.mjs
+```
+
+`.env` holds your credentials, so it is git-ignored — do not commit it. Only
+`.env.example` (placeholders) is tracked.
+
+Either way, stop the [browser daemon](#the-browser-daemon) first if it is running
 (`node teams-daemon.mjs --stop`) — two browsers on one profile write over each
-other's stored session. The login script refuses to open a window rather than
+other's stored session. The login scripts refuse to open a browser rather than
 letting that happen.
 
 ### 2. Post a message
@@ -160,12 +187,12 @@ Worth knowing:
 - **You show as Available while it runs.** A connected Teams client is a
   connected Teams client, and other people can see it. That is what the idle
   timeout is for; `TEAMS_DAEMON_IDLE=0` keeps the daemon up until it is stopped.
-- **Stop it before `manual-login.mjs`.** Two browsers sharing one profile
-  directory write over each other's stored session, so the login script refuses
-  to run while the daemon is up. A running daemon should mean logging in *less*
-  often, though — the
-  live tab keeps refreshing its own tokens, subject to whatever
-  re-authentication your tenant enforces anyway.
+- **Stop it before logging in.** Two browsers sharing one profile directory
+  write over each other's stored session, so `manual-login.mjs` and
+  `auto-login.mjs` both refuse to run while the daemon is up. A running daemon
+  should mean logging in *less* often, though — the live tab keeps refreshing
+  its own tokens, subject to whatever re-authentication your tenant enforces
+  anyway.
 - **Commands run one at a time.** They share a single page, so a second command
   waits for the first to finish rather than driving the same page with it.
 - **There is one daemon per working directory.** The profile and the daemon's
@@ -182,15 +209,16 @@ Worth knowing:
 
 A persistent browser profile (`$TEAMS_PROFILE`, default `.profile`) holds
 localStorage/cache, but reopening it drops session cookies. Since not all tenants
-offer the "Stay signed in?" option, `manual-login.mjs` also captures the full
-session (cookies + per-origin localStorage) to a storageState file
-(`$TEAMS_AUTH`, default `.auth/user.json`), which the other scripts restore
-before navigating.
+offer the "Stay signed in?" option, the login scripts (`manual-login.mjs` and
+`auto-login.mjs`) also capture the full session (cookies + per-origin
+localStorage) to a storageState file (`$TEAMS_AUTH`, default `.auth/user.json`),
+which the other scripts restore before navigating.
 
 `teams.mjs` holds what the scripts share — obtaining a Teams page (from the
-daemon, or from a browser of the command's own), finding and opening a chat by
-name, and scrolling the message pane back through the history — so each script
-only contains its own logic. `daemon.mjs` is the client side of the daemon:
+daemon, or from a browser of the command's own), the preamble both login scripts
+run before they can open a browser, finding and opening a chat by name, and
+scrolling the message pane back through the history — so each script only
+contains its own logic. `daemon.mjs` is the client side of the daemon:
 finding it, starting it, and serialising commands against it.
 
 ## Configuration
@@ -205,8 +233,8 @@ finding it, starting it, and serialising commands against it.
 | `TEAMS_DAEMON_DIR`   | `.daemon`         | Where the daemon's record, log and command lock are kept          |
 | `TEAMS_CDP`          | —                 | Attach to this CDP endpoint instead of managing a daemon          |
 
-Both `.profile/` and `.auth/` contain login credentials and are git-ignored —
-do not commit them.
+`.profile/`, `.auth/` and `.env` all contain login credentials and are
+git-ignored — do not commit them.
 
 The debugging port is bound on `127.0.0.1` only, but anything that can reach it
 can drive the signed-in browser, so leave `TEAMS_DAEMON_PORT` unset unless you

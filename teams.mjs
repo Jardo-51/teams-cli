@@ -1,7 +1,9 @@
 import { chromium } from '@playwright/test';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import {
-  CDP_ENDPOINT, DAEMON_ENABLED, acquireCommandLock, ensureDaemon, stopDaemon, touchActivity,
+  CDP_ENDPOINT, DAEMON_ENABLED, acquireCommandLock, connectableDaemon, ensureDaemon, stopDaemon,
+  touchActivity,
 } from './daemon.mjs';
 
 // Shared plumbing for the Teams scripts: launching a browser with a restored
@@ -90,6 +92,47 @@ export async function openTeams({
   await page.goto(TEAMS_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
 
   return { context, page, close: () => context.close() };
+}
+
+// The preamble both login scripts share, differing only in whether the browser
+// is visible: take the command lock, refuse to run beside a daemon that holds
+// the profile, and open a browser of this process's own with no session
+// restored. Returns that browser plus the lock's release, which the caller has
+// to call when it is done.
+//
+// Kept here rather than copied into each script because the reasoning below is
+// the delicate part, and two copies of it drift.
+export async function beginLogin({ headless }) {
+  // Held for the whole run. The record alone would miss the case this most needs
+  // to catch: a daemon is written down only once it is usable, so for the minute
+  // or more it takes to boot, its browser already owns the profile while nothing
+  // says so. A command that is starting one holds this lock across the spawn,
+  // which is what makes the lock — not the record — the thing to wait on.
+  const releaseLock = await acquireCommandLock();
+
+  // The record still has to be consulted for a daemon that finished starting and
+  // is now sitting idle: it holds the profile without holding the lock. Asked via
+  // connectableDaemon() so that a record left over from before a reboot, whose pid
+  // has since been reused, does not refuse a login and point at a --stop that
+  // would signal an unrelated process.
+  const daemon = await connectableDaemon();
+  if (daemon) {
+    console.log(`The Teams daemon (pid ${daemon.pid}) is holding the browser profile "${PROFILE_DIR}".`);
+    console.log('Stop it first: node teams-daemon.mjs --stop');
+    await releaseLock();
+    process.exit(1);
+  }
+
+  // Neither check covers a teams-daemon.mjs someone started by hand in a third
+  // terminal; Chromium's own profile lock is the only backstop there.
+
+  await mkdir(dirname(AUTH_PATH), { recursive: true });
+
+  // No session to restore — this is what the login scripts create. It must be
+  // this process's own browser, too: the daemon's is already signed in, which is
+  // the opposite of what a login is for.
+  const { context, page } = await openTeams({ headless, restoreAuth: false, daemon: false });
+  return { context, page, releaseLock };
 }
 
 // Attaches to the daemon's browser, starting one if none is running. The command
