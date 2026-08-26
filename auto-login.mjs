@@ -209,6 +209,13 @@ async function submitCode(page, codeInput) {
 
       console.log('That code was not accepted. Check the message and try again.');
     }
+
+    // The guard above only rescues a wrong verdict at the top of a *later*
+    // attempt, and the last one has none after it. A verdict errs towards
+    // rejection by design, so give the code box the last word here too rather
+    // than failing a login the page went on to accept.
+    if (await becameHidden(codeInput, CODE_POLL_MS)) return;
+
     throw new Error(`The MFA code was not accepted after ${MAX_CODE_ATTEMPTS} attempts.`);
   } finally {
     rl.close();
