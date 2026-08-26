@@ -13,7 +13,10 @@ const dryRun = args.includes('--dry-run');
 const positional = args.filter(a => a !== '--dry-run');
 const [chatName, message] = positional;
 
-if (!chatName || !message) {
+// A message of nothing but whitespace is rejected here rather than sent: Teams
+// treats such a compose box as empty and refuses the Enter, so it would go no
+// further than a command that reported a message it never delivered.
+if (!chatName || !message?.trim()) {
   console.log('Usage: node post-message.mjs "<chat name>" "<message>" [--dry-run]');
   process.exit(1);
 }
