@@ -261,8 +261,8 @@ async function loadTeams(page) {
 }
 
 // The compose box (a CKEditor contenteditable). Named in one place because the
-// command that writes a message into it, the page reset that empties it and the
-// wait that watches it fill all need it.
+// command that writes a message into it and the page reset that empties it both
+// reach for it.
 const COMPOSER_SELECTOR =
   '[data-tid="ckeditor"] [contenteditable="true"], div[role="textbox"][contenteditable="true"], [contenteditable="true"][data-tid="ckeditor"]';
 
@@ -304,17 +304,24 @@ export async function pasteIntoComposer(composer, text) {
   // Either would let the caller's Enter send a message other than the one it
   // was given, and report it as sent. Whitespace is normalised on both sides
   // because the composer lays the paste out in paragraphs of its own.
+  //
+  // The element the paste went to is handed to the wait rather than looked up
+  // again from inside it: re-resolving the selector on every poll would happily
+  // settle on a different box that also matches — the composer of the chat being
+  // left, or an inline message-edit field — and assert about the wrong one.
   const expected = text.replace(/\s+/g, ' ').trim();
-  await composer.page()
-    .waitForFunction(
-      ({ sel, wanted }) =>
-        (document.querySelector(sel)?.innerText ?? '').replace(/\s+/g, ' ').trim().includes(wanted),
-      { sel: COMPOSER_SELECTOR, wanted: expected },
+  const handle = await composer.elementHandle();
+  try {
+    await composer.page().waitForFunction(
+      ({ el, wanted }) => (el.innerText ?? '').replace(/\s+/g, ' ').trim().includes(wanted),
+      { el: handle, wanted: expected },
       { timeout: 10000 },
-    )
-    .catch(() => {
-      throw new Error('The message never appeared in the compose box.');
-    });
+    );
+  } catch {
+    throw new Error('The message never appeared in the compose box.');
+  } finally {
+    await handle.dispose();
+  }
 }
 
 // Restores the full auth state — cookies plus per-origin localStorage, where
