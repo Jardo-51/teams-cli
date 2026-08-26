@@ -290,6 +290,19 @@ export async function clearComposer(composer) {
 // keystroke after it. A paste hands the whole string over in one go, so its
 // newlines become line breaks within the single message being composed and
 // nothing in it is auto-formatted.
+// What a link contributes to the composer's text is not what was pasted in:
+// Teams makes an anchor of it, and shortens a long label to "https://…/x?query…"
+// while the anchor still carries the whole URL. So the wait below compares the
+// prose around the links rather than the pasted string itself — otherwise a
+// message carrying a long link reads as one that never arrived. A "www." link
+// is matched too, since Teams linkifies (and so may shorten) those as well, and
+// so is any token holding the ellipsis it shortens with.
+const LINK_LIKE = /\S*(?::\/\/|www\.|…)\S*/g;
+
+function proseOf(text) {
+  return text.replace(LINK_LIKE, ' ').replace(/\s+/g, ' ').trim();
+}
+
 export async function pasteIntoComposer(composer, text) {
   await composer.click();
   await composer.evaluate((el, value) => {
@@ -307,18 +320,28 @@ export async function pasteIntoComposer(composer, text) {
   // so does the first character of a multi-line paste that is still rendering.
   // Either would let the caller's Enter send a message other than the one it
   // was given, and report it as sent. Whitespace is normalised on both sides
-  // because the composer lays the paste out in paragraphs of its own.
+  // because the composer lays the paste out in paragraphs of its own, and the
+  // links are cut out of both because their labels are not what was pasted
+  // either — see LINK_LIKE.
   //
   // The element the paste went to is handed to the wait rather than looked up
   // again from inside it: re-resolving the selector on every poll would happily
   // settle on a different box that also matches — the composer of the chat being
   // left, or an inline message-edit field — and assert about the wrong one.
-  const expected = text.replace(/\s+/g, ' ').trim();
+  const expected = proseOf(text);
   const handle = await composer.elementHandle();
   try {
     await composer.page().waitForFunction(
-      ({ el, wanted }) => (el.innerText ?? '').replace(/\s+/g, ' ').trim().includes(wanted),
-      { el: handle, wanted: expected },
+      ({ el, wanted, linkLike }) => {
+        const rendered = el.innerText ?? '';
+        // An empty box is a paste that did not take. For a message that is
+        // nothing but a link there is no prose left to compare, so this is
+        // also all that can be checked about one.
+        if (!rendered.trim()) return false;
+        const prose = rendered.replace(new RegExp(linkLike, 'g'), ' ').replace(/\s+/g, ' ').trim();
+        return prose.includes(wanted);
+      },
+      { el: handle, wanted: expected, linkLike: LINK_LIKE.source },
       { timeout: COMPOSER_PASTE_TIMEOUT_MS },
     );
   } catch (cause) {

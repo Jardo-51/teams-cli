@@ -82,6 +82,10 @@ nix develop .#playwright --command node post-message.mjs "Developers" "Release n
 - BE: faster search"
 ```
 
+A URL in the message does still become a clickable link, as it does in a message
+typed by hand. Teams shortens the label of a long one, but the link itself keeps
+the whole URL.
+
 Add `--dry-run` to put the message into the compose box **without sending** — a
 safe way to confirm the correct chat is targeted:
 
