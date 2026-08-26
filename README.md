@@ -71,7 +71,22 @@ case-insensitive).
 nix develop .#playwright --command node post-message.mjs "<chat name>" "<message>"
 ```
 
-Add `--dry-run` to type the message into the compose box **without sending** — a
+The message is posted as a single message, with its line breaks intact and none
+of the composer's typing-time auto-formatting applied — so a message that spans
+several lines stays one message, and a line starting `- ` does not become a
+bullet:
+
+```bash
+nix develop .#playwright --command node post-message.mjs "Developers" "Release notes:
+- FE: new chat list
+- BE: faster search"
+```
+
+A URL in the message does still become a clickable link, as it does in a message
+typed by hand. Teams shortens the label of a long one, but the link itself keeps
+the whole URL.
+
+Add `--dry-run` to put the message into the compose box **without sending** — a
 safe way to confirm the correct chat is targeted:
 
 ```bash

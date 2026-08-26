@@ -33,6 +33,10 @@ const PANE_SETTLE_MS = 2500;
 // a chat whose title is spelled differently from its row would wait out on every
 // single command, so it trades a slow worst case against a slow common one.
 const CHAT_SWITCH_TIMEOUT_MS = 15_000;
+// How long a message pasted into the compose box gets to render there. Running
+// it out means Teams stopped honouring the synthetic paste, so the message was
+// never composed and there is nothing to send.
+const COMPOSER_PASTE_TIMEOUT_MS = 10_000;
 
 // How much of the viewport height each scroll step moves. Kept below 1 so
 // consecutive rendered windows overlap and nothing falls between them.
@@ -260,12 +264,14 @@ async function loadTeams(page) {
   await waitForChatList(page);
 }
 
-// The compose box (a CKEditor contenteditable). Named in one place because both
-// the command that types into it and the page reset that empties it need it.
+// The compose box (a CKEditor contenteditable). Named in one place because the
+// command that writes a message into it and the page reset that empties it both
+// reach for it.
+const COMPOSER_SELECTOR =
+  '[data-tid="ckeditor"] [contenteditable="true"], div[role="textbox"][contenteditable="true"], [contenteditable="true"][data-tid="ckeditor"]';
+
 export function composerLocator(page) {
-  return page.locator(
-    '[data-tid="ckeditor"] [contenteditable="true"], div[role="textbox"][contenteditable="true"], [contenteditable="true"][data-tid="ckeditor"]'
-  ).first();
+  return page.locator(COMPOSER_SELECTOR).first();
 }
 
 // Empties the compose box. Select-all and delete rather than fill(): CKEditor
@@ -274,6 +280,80 @@ export async function clearComposer(composer) {
   await composer.click();
   await composer.press('ControlOrMeta+A');
   await composer.press('Backspace');
+}
+
+// Puts <text> into the compose box at the caret, as a paste rather than as
+// keystrokes. Typing it would leak two of the composer's own behaviours into
+// the message: a literal newline arrives as Enter, which sends what has been
+// typed so far and makes the rest a second message, and a line starting "- "
+// (or "1. ") is turned into a list as it is written, a reflow that swallows the
+// keystroke after it. A paste hands the whole string over in one go, so its
+// newlines become line breaks within the single message being composed and
+// nothing in it is auto-formatted.
+// What a link contributes to the composer's text is not what was pasted in:
+// Teams makes an anchor of it, and shortens a long label to "https://…/x?query…"
+// while the anchor still carries the whole URL. So the wait below compares the
+// prose around the links rather than the pasted string itself — otherwise a
+// message carrying a long link reads as one that never arrived. A "www." link
+// is matched too, since Teams linkifies (and so may shorten) those as well, and
+// so is any token holding the ellipsis it shortens with.
+const LINK_LIKE = /\S*(?::\/\/|www\.|…)\S*/g;
+
+function proseOf(text) {
+  return text.replace(LINK_LIKE, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export async function pasteIntoComposer(composer, text) {
+  await composer.click();
+  await composer.evaluate((el, value) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', value);
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }, text);
+
+  // A message of nothing but whitespace renders no text to wait for.
+  if (!text.trim()) return;
+  // CKEditor takes the paste synchronously but renders it on its own schedule,
+  // so whatever the caller does next would be racing that render. What is
+  // waited for is <text> itself, not the box merely holding something: a draft
+  // clearComposer failed to empty satisfies "not empty" on the first poll, and
+  // so does the first character of a multi-line paste that is still rendering.
+  // Either would let the caller's Enter send a message other than the one it
+  // was given, and report it as sent. Whitespace is normalised on both sides
+  // because the composer lays the paste out in paragraphs of its own, and the
+  // links are cut out of both because their labels are not what was pasted
+  // either — see LINK_LIKE.
+  //
+  // The element the paste went to is handed to the wait rather than looked up
+  // again from inside it: re-resolving the selector on every poll would happily
+  // settle on a different box that also matches — the composer of the chat being
+  // left, or an inline message-edit field — and assert about the wrong one.
+  const expected = proseOf(text);
+  const handle = await composer.elementHandle();
+  try {
+    await composer.page().waitForFunction(
+      ({ el, wanted, linkLike }) => {
+        const rendered = el.innerText ?? '';
+        // An empty box is a paste that did not take. For a message that is
+        // nothing but a link there is no prose left to compare, so this is
+        // also all that can be checked about one.
+        if (!rendered.trim()) return false;
+        const prose = rendered.replace(new RegExp(linkLike, 'g'), ' ').replace(/\s+/g, ' ').trim();
+        return prose.includes(wanted);
+      },
+      { el: handle, wanted: expected, linkLike: LINK_LIKE.source },
+      { timeout: COMPOSER_PASTE_TIMEOUT_MS },
+    );
+  } catch (cause) {
+    // The friendly wording covers the case worth naming, but it is not the only
+    // way out of that wait — a closed page, a detached frame or a mistake in the
+    // predicate itself all land here too, and relabelling those would turn a
+    // stack trace into a confident wrong diagnosis. The cause carries the real
+    // one, including whether the wait timed out or failed at once.
+    throw new Error('The message never appeared in the compose box.', { cause });
+  } finally {
+    await handle.dispose();
+  }
 }
 
 // Restores the full auth state — cookies plus per-origin localStorage, where
