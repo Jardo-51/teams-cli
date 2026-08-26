@@ -110,37 +110,102 @@ async function firstVisible(locators, timeout) {
 // a mistyped digit should not cost that — but the loop must not run forever
 // either, since "still on the code page" is also what a stuck page looks like.
 const MAX_CODE_ATTEMPTS = 3;
+// How long a submitted code gets to be judged before "no verdict" is given up
+// on. Generous, because the page has to make a round trip to the identity
+// provider before it can say anything.
+const CODE_VERDICT_TIMEOUT_MS = 60_000;
+// How long each look at the page waits for the code box to go away before
+// checking the alerts instead. Doubles as the interval between those looks.
+const CODE_POLL_MS = 500;
+// How long the code box gets to go away after an alert has been raised. An
+// alert is not proof of rejection — the MFA pages announce things that are not
+// errors — so a code the page went on to accept still gets to win.
+const CODE_ACCEPT_GRACE_MS = 5_000;
+
+// Whether the locator went away within the budget. A detached element counts as
+// hidden, which is what a page navigating away from the code entry produces.
+async function becameHidden(locator, timeout) {
+  return locator
+    .waitFor({ state: 'hidden', timeout })
+    .then(() => true)
+    .catch(() => false);
+}
+
+// What the page's alert regions currently say, flattened into one string that
+// can be compared verbatim. Whitespace is normalised so that a re-render which
+// only reflows the same message does not read as a new one, and empty regions
+// are dropped, since a live region that is merely present is not a message.
+async function alertSummary(alerts) {
+  try {
+    const texts = await alerts.allInnerTexts();
+    return texts.map((text) => text.replace(/\s+/g, ' ').trim()).filter(Boolean).join(' | ');
+  } catch {
+    return '';
+  }
+}
+
+// Waits for the page to say whether the code that was just submitted is good.
+//
+// An accepted code navigates away from the code-entry page; a rejected one
+// leaves the box in place and raises an error beside it. The catch is that
+// nothing is guaranteed to clear that error when the next code is typed, so
+// from the second attempt onwards "an alert is visible" says nothing about the
+// code just submitted — only that an earlier one was wrong. What counts is
+// therefore not the presence of a message but a message that is *new*: one that
+// is non-empty and reads differently from the last one seen, starting with
+// `staleAlerts`, the snapshot taken before Verify was clicked. Comparing the
+// text, rather than waiting for the old banner to disappear first, keeps the
+// retry working on pages that never take the banner down at all.
+//
+// A message going away only moves that baseline along, it is never a verdict —
+// a page that does clear the banner while the next code is typed would
+// otherwise look like it had just rejected it. Moving the baseline is also what
+// lets the same message be recognised a second time, which is exactly what
+// mistyping twice in a row produces.
+//
+// The code box gets the last word either way: it is checked first on every
+// look, and once more after a new message appears, so an announcement that was
+// not an error cannot fail a code the page went on to accept. No verdict inside
+// the budget is treated as a rejection, which costs a re-prompt at worst.
+async function codeAccepted(codeInput, alerts, staleAlerts) {
+  const deadline = Date.now() + CODE_VERDICT_TIMEOUT_MS;
+  let lastAlerts = staleAlerts;
+  while (Date.now() < deadline) {
+    if (await becameHidden(codeInput, CODE_POLL_MS)) return true;
+    const currentAlerts = await alertSummary(alerts);
+    if (currentAlerts && currentAlerts !== lastAlerts) {
+      return await becameHidden(codeInput, CODE_ACCEPT_GRACE_MS);
+    }
+    lastAlerts = currentAlerts;
+  }
+  return false;
+}
 
 // Asks for the MFA code on the console, submits it, and re-prompts while the
 // code-entry page is still showing. The readline interface is deliberately held
 // open across the Verify click, which is what makes the retry possible.
 async function submitCode(page, codeInput) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const alerts = page.getByRole('alert');
   try {
     for (let attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
       let code = '';
       while (!code) {
         code = (await rl.question('Enter the MFA code sent to your phone: ')).trim();
       }
+
+      // A verification that finished after its budget ran out lands while the
+      // next code is being typed, and filling a box that is on its way out
+      // would fail a login that actually succeeded.
+      if (attempt > 1 && (await becameHidden(codeInput, CODE_POLL_MS))) return;
+
+      // Snapshotted before the click, so that a banner left over from the
+      // previous attempt cannot be read as this attempt's verdict.
+      const staleAlerts = await alertSummary(alerts);
       await codeInput.fill(code);
       await page.getByRole('button', { name: 'Verify' }).click();
 
-      // An accepted code navigates away from the code-entry page; a rejected one
-      // leaves the box in place and raises an error beside it. Waiting for the
-      // first of the two catches a wrong digit immediately, while still giving a
-      // slow-but-accepted verification room to finish. Neither signal inside the
-      // budget is treated as a rejection, which costs a re-prompt at worst.
-      // Empty alert regions are excluded, since a live region that is merely
-      // present is not an error.
-      const codeError = page.getByRole('alert').filter({ hasText: /\S/ }).first();
-      const accepted = await Promise.any([
-        codeInput.waitFor({ state: 'hidden', timeout: 60000 }).then(() => true),
-        codeError.waitFor({ state: 'visible', timeout: 60000 }).then(() => false),
-      ]).catch(() => false);
-
-      // The alert may have been about something other than the code, so let the
-      // code box have the last word: gone means we are through regardless.
-      if (accepted || !(await codeInput.isVisible().catch(() => false))) return;
+      if (await codeAccepted(codeInput, alerts, staleAlerts)) return;
 
       console.log('That code was not accepted. Check the message and try again.');
     }
