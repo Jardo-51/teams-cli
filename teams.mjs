@@ -297,14 +297,19 @@ export async function pasteIntoComposer(composer, text) {
   // A message of nothing but whitespace renders no text to wait for.
   if (!text.trim()) return;
   // CKEditor takes the paste synchronously but renders it on its own schedule,
-  // so whatever the caller does next would be racing that render. Waiting for
-  // the text to appear also means a Teams that stops honouring a synthetic
-  // paste fails here, rather than as an Enter on an empty box that the command
-  // then reports as a message sent.
+  // so whatever the caller does next would be racing that render. What is
+  // waited for is <text> itself, not the box merely holding something: a draft
+  // clearComposer failed to empty satisfies "not empty" on the first poll, and
+  // so does the first character of a multi-line paste that is still rendering.
+  // Either would let the caller's Enter send a message other than the one it
+  // was given, and report it as sent. Whitespace is normalised on both sides
+  // because the composer lays the paste out in paragraphs of its own.
+  const expected = text.replace(/\s+/g, ' ').trim();
   await composer.page()
     .waitForFunction(
-      (sel) => (document.querySelector(sel)?.innerText ?? '').trim().length > 0,
-      COMPOSER_SELECTOR,
+      ({ sel, wanted }) =>
+        (document.querySelector(sel)?.innerText ?? '').replace(/\s+/g, ' ').trim().includes(wanted),
+      { sel: COMPOSER_SELECTOR, wanted: expected },
       { timeout: 10000 },
     )
     .catch(() => {
