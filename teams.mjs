@@ -33,6 +33,10 @@ const PANE_SETTLE_MS = 2500;
 // a chat whose title is spelled differently from its row would wait out on every
 // single command, so it trades a slow worst case against a slow common one.
 const CHAT_SWITCH_TIMEOUT_MS = 15_000;
+// How long a message pasted into the compose box gets to render there. Running
+// it out means Teams stopped honouring the synthetic paste, so the message was
+// never composed and there is nothing to send.
+const COMPOSER_PASTE_TIMEOUT_MS = 10_000;
 
 // How much of the viewport height each scroll step moves. Kept below 1 so
 // consecutive rendered windows overlap and nothing falls between them.
@@ -315,7 +319,7 @@ export async function pasteIntoComposer(composer, text) {
     await composer.page().waitForFunction(
       ({ el, wanted }) => (el.innerText ?? '').replace(/\s+/g, ' ').trim().includes(wanted),
       { el: handle, wanted: expected },
-      { timeout: 10000 },
+      { timeout: COMPOSER_PASTE_TIMEOUT_MS },
     );
   } catch (cause) {
     // The friendly wording covers the case worth naming, but it is not the only
