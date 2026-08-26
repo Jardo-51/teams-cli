@@ -71,9 +71,10 @@ case-insensitive).
 nix develop .#playwright --command node post-message.mjs "<chat name>" "<message>"
 ```
 
-The message is posted exactly as given, as a single message — including one
-that spans several lines, and including text Teams would otherwise convert
-while it was being typed (a line starting `- ` does not become a bullet):
+The message is posted as a single message, with its line breaks intact and none
+of the composer's typing-time auto-formatting applied — so a message that spans
+several lines stays one message, and a line starting `- ` does not become a
+bullet:
 
 ```bash
 nix develop .#playwright --command node post-message.mjs "Developers" "Release notes:

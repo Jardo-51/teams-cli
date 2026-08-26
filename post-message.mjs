@@ -4,7 +4,9 @@ import { openTeams, waitForChatList, openChat, composerLocator, clearComposer, p
 //   nix develop .#playwright --command node post-message.mjs "<chat name>" "<message>" [--dry-run]
 //
 // Posts <message> into the Teams chat whose name matches <chat name>. It may
-// span several lines; the whole of it is posted as a single message, verbatim.
+// span several lines; the whole of it goes out as a single message, with its
+// line breaks intact and none of the composer's typing-time auto-formatting
+// applied to it.
 // With --dry-run the message is put into the compose box but NOT sent,
 // so you can confirm the correct chat is targeted before anything goes out.
 
