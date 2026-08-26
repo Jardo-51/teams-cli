@@ -71,7 +71,17 @@ case-insensitive).
 nix develop .#playwright --command node post-message.mjs "<chat name>" "<message>"
 ```
 
-Add `--dry-run` to type the message into the compose box **without sending** — a
+The message is posted exactly as given, as a single message — including one
+that spans several lines, and including text Teams would otherwise convert
+while it was being typed (a line starting `- ` does not become a bullet):
+
+```bash
+nix develop .#playwright --command node post-message.mjs "Developers" "Release notes:
+- FE: new chat list
+- BE: faster search"
+```
+
+Add `--dry-run` to put the message into the compose box **without sending** — a
 safe way to confirm the correct chat is targeted:
 
 ```bash

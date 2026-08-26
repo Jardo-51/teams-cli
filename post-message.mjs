@@ -1,10 +1,11 @@
-import { openTeams, waitForChatList, openChat, composerLocator, clearComposer } from './teams.mjs';
+import { openTeams, waitForChatList, openChat, composerLocator, clearComposer, pasteIntoComposer } from './teams.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node post-message.mjs "<chat name>" "<message>" [--dry-run]
 //
-// Posts <message> into the Teams chat whose name matches <chat name>.
-// With --dry-run the message is typed into the compose box but NOT sent,
+// Posts <message> into the Teams chat whose name matches <chat name>. It may
+// span several lines; the whole of it is posted as a single message, verbatim.
+// With --dry-run the message is put into the compose box but NOT sent,
 // so you can confirm the correct chat is targeted before anything goes out.
 
 const args = process.argv.slice(2);
@@ -29,16 +30,18 @@ try {
 
   const composer = composerLocator(page);
   await composer.waitFor({ state: 'visible', timeout: 30000 });
-  // Typing puts the text at the caret, so anything already in the box becomes
+  // The message goes in at the caret, so anything already in the box becomes
   // part of the message that goes out. The page reset clears the draft of the
   // chat the previous command left open; this covers the rest — a draft Teams
   // itself synced in from another client, or one in a chat this page has not
-  // had open. Nothing typed here is worth risking a wrong message for.
+  // had open. No draft is worth risking a wrong message for.
   await clearComposer(composer);
-  await composer.type(message, { delay: 15 });
+  // Whatever <message> holds goes out as one message: pasteIntoComposer keeps a
+  // newline in it from reaching the composer as the Enter that sends.
+  await pasteIntoComposer(composer, message);
 
   if (dryRun) {
-    console.log('DRY RUN: message typed but not sent.');
+    console.log('DRY RUN: message put in the compose box but not sent.');
   } else {
     await page.keyboard.press('Enter');
     await page.waitForTimeout(4000);

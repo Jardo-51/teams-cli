@@ -260,12 +260,14 @@ async function loadTeams(page) {
   await waitForChatList(page);
 }
 
-// The compose box (a CKEditor contenteditable). Named in one place because both
-// the command that types into it and the page reset that empties it need it.
+// The compose box (a CKEditor contenteditable). Named in one place because the
+// command that writes a message into it, the page reset that empties it and the
+// wait that watches it fill all need it.
+const COMPOSER_SELECTOR =
+  '[data-tid="ckeditor"] [contenteditable="true"], div[role="textbox"][contenteditable="true"], [contenteditable="true"][data-tid="ckeditor"]';
+
 export function composerLocator(page) {
-  return page.locator(
-    '[data-tid="ckeditor"] [contenteditable="true"], div[role="textbox"][contenteditable="true"], [contenteditable="true"][data-tid="ckeditor"]'
-  ).first();
+  return page.locator(COMPOSER_SELECTOR).first();
 }
 
 // Empties the compose box. Select-all and delete rather than fill(): CKEditor
@@ -274,6 +276,40 @@ export async function clearComposer(composer) {
   await composer.click();
   await composer.press('ControlOrMeta+A');
   await composer.press('Backspace');
+}
+
+// Puts <text> into the compose box at the caret, as a paste rather than as
+// keystrokes. Typing it would leak two of the composer's own behaviours into
+// the message: a literal newline arrives as Enter, which sends what has been
+// typed so far and makes the rest a second message, and a line starting "- "
+// (or "1. ") is turned into a list as it is written, a reflow that swallows the
+// keystroke after it. A paste hands the whole string over in one go, so its
+// newlines become line breaks within the single message being composed and
+// nothing in it is auto-formatted.
+export async function pasteIntoComposer(composer, text) {
+  await composer.click();
+  await composer.evaluate((el, value) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', value);
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }, text);
+
+  // A message of nothing but whitespace renders no text to wait for.
+  if (!text.trim()) return;
+  // CKEditor takes the paste synchronously but renders it on its own schedule,
+  // so whatever the caller does next would be racing that render. Waiting for
+  // the text to appear also means a Teams that stops honouring a synthetic
+  // paste fails here, rather than as an Enter on an empty box that the command
+  // then reports as a message sent.
+  await composer.page()
+    .waitForFunction(
+      (sel) => (document.querySelector(sel)?.innerText ?? '').trim().length > 0,
+      COMPOSER_SELECTOR,
+      { timeout: 10000 },
+    )
+    .catch(() => {
+      throw new Error('The message never appeared in the compose box.');
+    });
 }
 
 // Restores the full auth state — cookies plus per-origin localStorage, where
