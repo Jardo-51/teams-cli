@@ -1,7 +1,8 @@
 # teams-cli
 
 Small Playwright-based CLI for automating Microsoft Teams (web) — capture a
-login session, then post, read and react to chat messages from the command line.
+login session, then post and read chat messages from the command line, and leave
+reactions on them or take them back.
 
 ## Requirements
 
@@ -276,10 +277,12 @@ which the other scripts restore before navigating.
 
 `teams.mjs` holds what the scripts share — obtaining a Teams page (from the
 daemon, or from a browser of the command's own), the preamble both login scripts
-run before they can open a browser, finding and opening a chat by name, and
-scrolling the message pane back through the history — so each script only
-contains its own logic. `daemon.mjs` is the client side of the daemon:
-finding it, starting it, and serialising commands against it.
+run before they can open a browser, finding and opening a chat by name, scrolling
+the message pane back through the history, and everything the two reaction
+commands do alike (their arguments, the walk to each message of a list, the hover
+toolbar and the emoji picker) — so each script only contains its own logic.
+`daemon.mjs` is the client side of the daemon: finding it, starting it, and
+serialising commands against it.
 
 ## Configuration
 
