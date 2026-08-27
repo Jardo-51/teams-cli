@@ -8,9 +8,10 @@ import {
 //
 // Reacts with <emoji> to the message <message ids> in the Teams chat whose name
 // matches <chat name>. Several ids can be given as one comma-separated list, in
-// which case every one of those messages gets the reaction. The ids and the
-// emoji are the ones read-chat-messages.mjs reports, so its output can be fed
-// straight back in.
+// which case every one of those messages gets the reaction. They are worked
+// through newest first, whatever order they are given in, so one walk back
+// through the history covers the whole list. The ids and the emoji are the ones
+// read-chat-messages.mjs reports, so its output can be fed straight back in.
 //
 // Reacting is a toggle in Teams, so a reaction we already left is never clicked
 // again — that would take it back. Such a message reports the existing reaction
@@ -92,6 +93,17 @@ if (!/[^\x00-\x7F]/.test(emoji)) {
   process.exit(1);
 }
 
+// The history walk only ever scrolls back, so the ids are worked through newest
+// first: every target after the first is then older than where the pane already
+// stands, and one walk carries on through the whole list instead of each id
+// sending it back to the newest messages. The ids are epoch milliseconds, so
+// ordering them numerically orders them in time; an id that is not a plain
+// number carries no such order, so a list holding one is left in the order it
+// was given.
+const orderedIds = messageIds.every(id => /^\d+$/.test(id))
+  ? [...messageIds].sort((a, b) => Number(b) - Number(a))
+  : messageIds;
+
 const { page, close } = await openTeams();
 
 try {
@@ -102,7 +114,7 @@ try {
   let alreadyReacted = 0;
   const failures = [];
 
-  for (const messageId of messageIds) {
+  for (const messageId of orderedIds) {
     try {
       if (await reactToMessage(page, messageId, resolvedName)) {
         reacted++;
@@ -165,15 +177,33 @@ async function reactToMessage(page, mid, resolvedName) {
   return await ownPill.count() === 0 && await react(page, message, mid, ownPill);
 }
 
+// Whether the pane still stands where the chat opened it, at the newest
+// messages. The walk below only ever goes back, so this is what says whether
+// what the walk has already passed can still be reached without returning to
+// the bottom first.
+let paneAtNewest = true;
+
 // Brings the message into the pane. The pane opens at the newest messages and
 // the walk only ever goes back, so an older target is reached by scrolling —
-// the same walk read-chat-messages.mjs makes. A target that is not rendered at
-// all may equally lie ahead of where the previous message left the pane, and
-// that direction is only reachable from the bottom, so the walk restarts there.
-// Messages read from one period are normally mounted together, in which case
-// this costs nothing.
+// the same walk read-chat-messages.mjs makes. Since the ids are handled newest
+// first, the walk carries on from where the previous message left it rather
+// than starting over.
+//
+// A target that is neither rendered nor older than the pane lies ahead of it,
+// and that direction is only reachable from the newest end, so a walk that came
+// up empty is tried once more from there. A walk that started at the newest end
+// has already seen the whole history, so it is not repeated — an id that
+// belongs to another chat costs one walk, not two.
 async function findMessage(page, mid) {
-  if (await messageLocator(page, mid).count() === 0) await scrollToNewest(page);
+  const startedAtNewest = paneAtNewest;
+  // Either walk may leave the pane part way back through the history.
+  paneAtNewest = false;
+
+  if (await scrollMessageIntoView(page, mid, { maxHistoryWaits: MAX_HISTORY_WAITS })) return true;
+  if (startedAtNewest) return false;
+
+  console.log(`Message ${mid} is not behind the pane — looking again from the newest messages...`);
+  await scrollToNewest(page);
   return scrollMessageIntoView(page, mid, { maxHistoryWaits: MAX_HISTORY_WAITS });
 }
 
