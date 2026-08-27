@@ -113,6 +113,12 @@ async function hasOwnPill(ownPills) {
   return await ownPills.count() > 0;
 }
 
+// How long the message's reaction row is given to finish re-rendering before
+// the pill's absence is read as the removal. The row is rebuilt whenever a
+// reaction changes, and a locator asked for the pill in the middle of that sees
+// nothing — the same answer a removed reaction gives.
+const REMOVAL_SETTLE_MS = 1000;
+
 // Removes the reaction: works out which of the picker's buttons applied it,
 // clicks that one again and waits for the pill to go. Returns false without
 // clicking anything if the reaction turns out to be gone after all.
@@ -175,6 +181,32 @@ async function unreact(page, message, mid, ownPills) {
           { cause: err }
         );
       });
+
+    // Nothing matching the locator is not the same thing as the reaction being
+    // gone, and two states other than a successful removal produce it: the pane
+    // is virtualised, so a message unmounted after the picker closed takes
+    // every selector inside it with it, and a reaction row polled in the middle
+    // of the re-render a reaction change triggers is momentarily empty too.
+    // Both would pass the wait above and have the message reported as done
+    // while it still carries the reaction. So the absence is only believed of a
+    // message that is still there to carry it, and the pill is asked for once
+    // more after a pause long enough for a row that was re-rendering to have
+    // put it back.
+    await page.waitForTimeout(REMOVAL_SETTLE_MS);
+    if (await message.count() === 0) {
+      throw new Error(
+        `Message ${mid} left the message pane while the "${emoji}" reaction was being taken back, `
+        + 'so whether it was really removed could not be established. Read the chat back before '
+        + 'retrying.'
+      );
+    }
+    if (await pill.count() > 0) {
+      throw new Error(
+        `The "${emoji}" reaction is on message ${mid} again once its reaction row had re-rendered, `
+        + 'so the pill going missing right after the click was that re-render rather than the '
+        + 'removal. Check the chat before retrying.'
+      );
+    }
     return true;
   } finally {
     // The picker is a modal popup: left open it covers the message pane, and
