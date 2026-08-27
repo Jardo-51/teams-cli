@@ -85,9 +85,41 @@ async function removeReaction(page, mid, resolvedName, findMessage) {
   await settleReactions(message);
 
   const ownPills = ownReactionPills(page, message, emoji);
-  const removed = await hasOwnPill(ownPills) && await unreact(page, message, mid, ownPills);
-  if (removed) console.log(`Removed our "${emoji}" reaction from message ${mid} in "${resolvedName}".`);
+  const removed = await hasOwnPill(ownPills) ? await unreactAll(page, message, mid, ownPills) : 0;
+  if (removed === 1) console.log(`Removed our "${emoji}" reaction from message ${mid} in "${resolvedName}".`);
+  else if (removed > 1) console.log(`Removed our ${removed} "${emoji}" reactions from message ${mid} in "${resolvedName}".`);
   else console.log(`Message ${mid} carries no "${emoji}" reaction of ours — nothing to remove.`);
+  return removed > 0;
+}
+
+// How many reactions of ours one message may have taken off it in a single run.
+// It is a bound rather than a limit anyone should reach: the picker holds three
+// buttons for the most crowded character and none of them can be applied twice.
+// What it is really for is keeping a pill that the removal does not actually
+// clear from being clicked round after round.
+const MAX_OWN_REACTIONS = 10;
+
+// Takes back every reaction of ours on the message that renders <emoji>, and
+// returns how many of them this run removed.
+//
+// Usually that is the one, but the character does not identify a reaction:
+// several of the picker's buttons render the same one, so a message can carry
+// two pressed pills of ours that look alike. Neither command produces such a
+// pair — react-to-message.mjs leaves a message that already carries any own
+// pill with the emoji alone — but reacting by hand in the client does, and it
+// is exactly the case this command exists to get right. Taking only the first
+// one back while reporting the message as removed would leave the other sitting
+// there with nothing in the output hinting at it.
+async function unreactAll(page, message, mid, ownPills) {
+  let removed = 0;
+  for (let round = 0; round < MAX_OWN_REACTIONS; round++) {
+    if (await unreact(page, message, mid, ownPills)) removed++;
+    // One round takes back one exact reaction, so what is left is read off the
+    // message again rather than assumed: a pill that went by itself while we
+    // were in the picker is as good as removed, and one that is still there
+    // gets a round of its own.
+    if (await ownPills.count() === 0) break;
+  }
   return removed;
 }
 

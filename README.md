@@ -215,6 +215,10 @@ command is harmless.
 The reaction that is taken back is the exact one you left, not merely one that
 looks the same: where several of the picker's emoji share a character, clicking
 the wrong one of them would add a second reaction instead of removing the first.
+If you left more than one of those look-alikes on the same message — which takes
+reacting by hand in the client, since `react-to-message.mjs` leaves a message
+that already carries your reaction alone — every one of them is taken back, and
+the run says how many.
 
 ## The browser daemon
 
