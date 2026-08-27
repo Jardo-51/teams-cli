@@ -107,6 +107,12 @@ const orderedIds = messageIds.every(id => /^\d+$/.test(id))
   ? [...messageIds].sort((a, b) => Number(b) - Number(a))
   : messageIds;
 
+// Whether the pane still stands where the chat opened it, at the newest
+// messages. The walk below only ever goes back, so this is what says whether
+// what the walk has already passed can still be reached without returning to
+// the bottom first.
+let paneAtNewest = true;
+
 const { page, close } = await openTeams();
 
 try {
@@ -202,12 +208,6 @@ async function reactToMessage(page, mid, resolvedName) {
 function isSystemic(page, err) {
   return err?.systemic === true || page.isClosed();
 }
-
-// Whether the pane still stands where the chat opened it, at the newest
-// messages. The walk below only ever goes back, so this is what says whether
-// what the walk has already passed can still be reached without returning to
-// the bottom first.
-let paneAtNewest = true;
 
 // Brings the message into the pane. The pane opens at the newest messages and
 // the walk only ever goes back, so an older target is reached by scrolling —
