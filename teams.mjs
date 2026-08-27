@@ -7,7 +7,8 @@ import {
 } from './daemon.mjs';
 
 // Shared plumbing for the Teams scripts: launching a browser with a restored
-// session, and opening a chat by name.
+// session, opening a chat by name, walking back through its history, and the
+// message-reaction helpers the two reaction commands work from.
 
 // The browser profile (localStorage, cache) is a persistent directory at
 // $TEAMS_PROFILE. Persistent profiles drop session cookies on reopen, so auth
@@ -610,4 +611,399 @@ export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0 } =
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// --- Message reactions -----------------------------------------------------
+//
+// What react-to-message.mjs and unreact-to-message.mjs share, which is nearly
+// everything: the same arguments, the same walk back through the history, the
+// same hover toolbar and the same emoji picker. The two differ only in which of
+// the picker's buttons they end up clicking and in what they then expect to
+// happen to the pill, so the plumbing lives here and each command keeps just
+// its half of that difference.
+
+// How often the walk back through the history may pause for a fetch of older
+// messages. The target can be arbitrarily far back, so the pauses are needed
+// here; the cap only bounds how much of a long conversation one run pages in.
+const MAX_HISTORY_WAITS = 100;
+// How far the reaction picker is scrolled looking for a button. The emoji list
+// is virtualised and only the rendered window is searchable, so it has to be
+// walked a viewport at a time; the full list takes some sixty steps.
+const MAX_PICKER_SCROLL_STEPS = 200;
+// How much of the picker's height each of those steps moves. Kept below 1 so
+// consecutive rendered windows overlap and no row falls between them.
+const PICKER_SCROLL_FRACTION = 0.8;
+// How long the picker gets to render its emoji. Its frame appears first, so this
+// covers the list arriving, not the popup opening.
+const PICKER_TIMEOUT_MS = 15000;
+// How long each scroll step of the picker is given to render the emoji it moved
+// into view, before that window is searched.
+const PICKER_SETTLE_MS = 250;
+// How long the hover toolbar of the message gets to open.
+const MESSAGE_ACTIONS_TIMEOUT_MS = 15000;
+// How long the message itself is given to render after the history walk reports
+// it, before anything is read off it.
+const MESSAGE_TIMEOUT_MS = 15000;
+// How long an already-rendered message is given to bring its reaction row with
+// it. A message nobody reacted to has no pills at all, so running out here is an
+// ordinary outcome rather than a failure.
+const REACTION_SETTLE_MS = 5000;
+// How long the message is given to show the change after an emoji is clicked —
+// a reaction is only really applied, or really taken back, once the server has
+// accepted it.
+export const REACTION_TIMEOUT_MS = 15000;
+
+// The message ids a command was given: one id, or several as a comma-separated
+// list. Blank entries — a trailing or a doubled comma — are dropped rather than
+// refused, since they say nothing about which messages are meant, and a
+// repeated id is collapsed: its second turn would only find what the first one
+// left and report it as needing nothing.
+//
+// Returns { error } rather than throwing, so the caller can print it the way it
+// prints its own usage.
+export function parseMessageIds(messageIdList) {
+  const ids = [...new Set(messageIdList.split(',').map(id => id.trim()).filter(Boolean))];
+  if (!ids.length) {
+    return { error: `No message id in "${messageIdList}" — expected an id, or several as a comma-separated list.` };
+  }
+  // The ids end up inside CSS attribute selectors, so anything that could break
+  // out of one is refused rather than escaped — no message id legitimately
+  // contains such characters.
+  for (const id of ids) {
+    if (!/^[A-Za-z0-9_.:-]+$/.test(id)) {
+      return { error: `Invalid message id "${id}" — expected the id read-chat-messages.mjs reports, e.g. "1785922526738".` };
+    }
+  }
+  return { ids };
+}
+
+// Why the emoji argument cannot be used, or null when it can be. Same reasoning
+// as for the ids: it too is put into a CSS attribute selector.
+export function emojiArgumentError(emoji) {
+  if (/["'\\]/.test(emoji)) {
+    return `Invalid emoji "${emoji}" — expected a single emoji character, e.g. "👍".`;
+  }
+  // An emoji name ("thumbsup") or a word passes the check above and would only
+  // be refused minutes later, after the browser has opened and the picker has
+  // been walked. Every emoji lies outside ASCII, so that one cheap test rejects
+  // plain text here; anything finer is left to the picker lookup.
+  if (!/[^\x00-\x7F]/.test(emoji)) {
+    return `Invalid emoji "${emoji}" — expected the emoji character itself, e.g. "👍", not its name.`;
+  }
+  return null;
+}
+
+// The ids of a run in the order they should be worked through: newest first,
+// whatever order they were given in. The history walk only ever scrolls back,
+// so every target after the first is then older than where the pane already
+// stands, and one walk carries on through the whole list instead of each id
+// sending it back to the newest messages.
+//
+// The ids are epoch milliseconds, so ordering them numerically orders them in
+// time; an id that is not a plain number carries no such order, so a list
+// holding one is left exactly as it was given.
+function orderNewestFirst(messageIds) {
+  return messageIds.every(id => /^\d+$/.test(id))
+    ? [...messageIds].sort((a, b) => Number(b) - Number(a))
+    : messageIds;
+}
+
+// A find(mid) that brings messages into the rendered window, for a command
+// working through a list of them. The pane opens at the newest messages and the
+// walk only ever goes back, so the finder remembers where it left the pane:
+// targets handed to it newest first are then reached by one walk carrying on
+// rather than by a walk per id.
+//
+// A target that is neither rendered nor older than the pane lies ahead of it,
+// and that direction is only reachable from the newest end, so a walk that came
+// up empty is tried once more from there. A walk that started at the newest end
+// has already seen the whole history, so it is not repeated — an id that
+// belongs to another chat costs one walk, not two.
+export function createMessageFinder(page, { maxHistoryWaits = MAX_HISTORY_WAITS } = {}) {
+  // Where openChat leaves the pane, and the only thing the walks below move
+  // away from.
+  let paneAtNewest = true;
+
+  return async function findMessage(mid) {
+    const startedAtNewest = paneAtNewest;
+    // Either walk may leave the pane part way back through the history.
+    paneAtNewest = false;
+
+    if (await scrollMessageIntoView(page, mid, { maxHistoryWaits })) return true;
+    if (startedAtNewest) return false;
+
+    console.log(`Message ${mid} is not behind the pane — looking again from the newest messages...`);
+    await scrollToNewest(page);
+    return scrollMessageIntoView(page, mid, { maxHistoryWaits });
+  };
+}
+
+// Works through a list of message ids, one at a time. act(mid) does whatever
+// the command does to one message and returns whether that changed anything; it
+// reports each message itself, since only it knows what to call the outcome.
+// What is kept here is the bookkeeping both commands need — one message that
+// cannot be reached must not cost the rest of the list its turn — plus the
+// tally and the failure they raise at the end.
+//
+// The words are passed in because the commands speak of different things: "2
+// reacted, 1 already reacted" against "2 removed, 1 not reacted".
+export async function actOnMessages(page, messageIds, act, { changed, unchanged, couldNot, chatName }) {
+  const orderedIds = orderNewestFirst(messageIds);
+  let changedCount = 0;
+  let unchangedCount = 0;
+  const failures = [];
+
+  for (const [index, mid] of orderedIds.entries()) {
+    try {
+      if (await act(mid)) changedCount++;
+      else unchangedCount++;
+    } catch (err) {
+      // One unreachable message must not cost the rest of the list its turn, so
+      // what went wrong is kept and the run moves on. The collected failures
+      // are raised together once the list is done.
+      console.log(`Could not ${couldNot} message ${mid}: ${err.message}`);
+      failures.push(err);
+      // Unless the failure was never about this message: the same verdict
+      // awaits every id left, each after another full walk back through the
+      // history, so the run stops here and reports what it has rather than
+      // proving the same thing over and over.
+      if (isSystemic(page, err)) {
+        if (index < orderedIds.length - 1) {
+          console.log('This says nothing about the remaining messages either — stopping here.');
+        }
+        break;
+      }
+    }
+  }
+
+  if (messageIds.length > 1) {
+    // A run stopped by a systemic failure leaves ids it never looked at, and
+    // counting them as anything else would misreport what happened to them.
+    const notAttempted = messageIds.length - changedCount - unchangedCount - failures.length;
+    console.log(
+      `${messageIds.length} message(s): ${changedCount} ${changed}, ${unchangedCount} ${unchanged}, `
+      + `${failures.length} failed` + (notAttempted ? `, ${notAttempted} not attempted.` : '.')
+    );
+  }
+  // A single-id run has nothing to aggregate: the wrapper would make its
+  // headline a count and push the sentence saying what to do about it into the
+  // [errors] array underneath. Raised unchanged, it reads as it always did.
+  if (messageIds.length === 1 && failures.length === 1) throw failures[0];
+  if (failures.length) {
+    throw new AggregateError(
+      failures,
+      `Could not ${couldNot} ${failures.length} of ${messageIds.length} message(s) in "${chatName}".`
+    );
+  }
+}
+
+// Whether a failure was about the run rather than about the message it happened
+// on — the emoji is not in the picker, the pane cannot be walked at all, the
+// browser is gone. The scripts mark such errors as they raise them; a page that
+// has closed under us is the same verdict arrived at from the other side.
+function isSystemic(page, err) {
+  return err?.systemic === true || page.isClosed();
+}
+
+// A short "author: body" line, so a command says which message it acted on
+// rather than only echoing back the id.
+export function describeMessage(page, mid) {
+  return page.evaluate(({ mid, selector }) => {
+    const msg = document.querySelector(selector);
+    const item = msg?.closest('[data-tid="chat-pane-item"]');
+    const author = document.getElementById(`author-${mid}`)?.textContent?.trim()
+      || item?.querySelector('[data-tid="message-author-name"]')?.textContent?.trim()
+      || '(unknown author)';
+    const content = document.getElementById(`content-${mid}`) ?? msg?.querySelector('[data-message-content]');
+    const body = (content?.innerText ?? content?.textContent ?? '').trim().replace(/\s+/g, ' ');
+    return `${author}: ${body.length > 80 ? body.slice(0, 80) + '…' : body}`;
+  }, { mid, selector: messageSelector(mid) });
+}
+
+// Gives a freshly rendered message time to render its reaction row, so that the
+// pills can be read off it. The pane is virtualised, so a message may have been
+// mounted a moment ago with its reactions still to come — and since reacting is
+// a toggle, a command that read the pills too early would click the very
+// reaction it meant to leave alone. A message nobody has reacted to never grows
+// a row, so this is a settle rather than a requirement.
+export async function settleReactions(message) {
+  await message.waitFor({ state: 'visible', timeout: MESSAGE_TIMEOUT_MS });
+  await message.locator('[data-tid="diverse-reaction-pill-button"]').first()
+    .waitFor({ state: 'visible', timeout: REACTION_SETTLE_MS })
+    .catch(() => {});
+}
+
+// The message's <emoji> pills that we left ourselves. Reactions are stored per
+// person and clicking one we already left takes it back, so whether one of them
+// is ours is what both commands turn on. The client marks ours as pressed —
+// an attribute, so it says the same in whatever language the client is in.
+export function ownReactionPills(page, message, emoji) {
+  return message.locator('[data-tid="diverse-reaction-pill-button"][aria-pressed="true"]')
+    .filter({ has: emojiImage(page, emoji) });
+}
+
+// Matches the <img> Teams renders an emoji as. Its alt is the emoji character,
+// which may or may not carry the U+FE0F variation selector — the same emoji
+// either way, so both spellings are accepted.
+export function emojiImage(page, emoji) {
+  const bare = emoji.replace(/\uFE0F/g, '');
+  return page.locator(`img[alt="${bare}"], img[alt="${bare}\uFE0F"]`);
+}
+
+// Clicks one of the reaction picker's emoji on a message, and leaves the picker
+// closed whichever way that goes. This is everything the two commands do to a
+// message once they have decided it needs something done to it, and they do it
+// in the same eight steps; what differs is only which button they are after and
+// what they then expect to happen to the pill, which is what they pass in:
+//
+//   buttons(picker)  the candidates, narrowed from the open picker
+//   notInPicker()    the error to raise when the picker holds none of them
+//   stillNeeded()    whether the click is still wanted, asked after the walk
+//                    through the picker and before the click itself
+//   confirm()        waits for the message to show the change, and says what it
+//                    means if it never does
+//
+// Returns whether a button was clicked — false when stillNeeded() has changed
+// its mind in the meantime.
+//
+// Kept whole here rather than written out in each command because the picker is
+// a modal popup and the protocol around it is the delicate part: two copies of
+// it would have to be kept in step by hand, and a divergence would leave the
+// popup standing over the message pane for the rest of the list.
+export async function clickPickerButton(page, message, mid, { buttons, notInPicker, stillNeeded, confirm }) {
+  let pickerOpen = false;
+  try {
+    const picker = await openReactionPicker(page, message, mid);
+    pickerOpen = true;
+
+    const button = await findPickerButton(page, buttons(picker));
+    if (!button) throw notInPicker();
+    // Opening the picker and walking it gave the message plenty of time to
+    // finish rendering, so what the caller turns on is read off it once more
+    // right before the click. Reacting is a toggle, so a click that is no
+    // longer wanted does not amount to nothing — it does the opposite of what
+    // was asked for.
+    if (!await stillNeeded()) return false;
+
+    await button.click();
+    // Clicking an emoji closes the picker, so from here on there is nothing
+    // left to dismiss.
+    pickerOpen = false;
+
+    await confirm();
+    return true;
+  } finally {
+    // The picker is a modal popup: left open it covers the message pane, and
+    // the next message cannot even be hovered through it — one message that
+    // went wrong would cost the rest of the list its turn for a reason of its
+    // own making. Only the ways out that leave it standing are dismissed, so
+    // that a run that went well sends no stray keystroke into the chat. A
+    // dismissal that itself fails must not replace the failure that led here.
+    if (pickerOpen) await page.keyboard.press('Escape').catch(() => {});
+  }
+}
+
+// Opens the message's reaction picker and hands it back ready to be searched.
+// The picker is a modal popup: from the moment this returns, every way out of
+// the caller has to close it, or the message pane stays covered and the next
+// message cannot even be hovered.
+async function openReactionPicker(page, message, mid) {
+  const actions = await openMessageActions(page, message, mid);
+
+  // Forced past the actionability check on purpose: for a message at the top of
+  // the pane the toolbar renders under the pinned-message banner, which sits on
+  // top of the "More reactions" button and intercepts the click. The button is
+  // the right target — it is just visually overlapped — so the receives-events
+  // check is the wrong guard here and would only time out.
+  await actions.locator('[data-tid="expanded-reactions-picker-entry"]').click({ force: true });
+
+  const picker = page.locator('[data-tid="reaction-picker-root"]');
+  try {
+    // The picker's frame appears before its emoji do, so wait for the list
+    // itself — searching it while it is still empty would find nothing.
+    await picker.locator('[data-tid^="emoticon-button-"]').first()
+      .waitFor({ state: 'visible', timeout: PICKER_TIMEOUT_MS });
+  } catch (err) {
+    // The frame is up even though its list never arrived, and this call is
+    // about to fail rather than return — so the caller will not know there is
+    // anything to dismiss, and it has to be dismissed here.
+    await page.keyboard.press('Escape').catch(() => {});
+    throw err;
+  }
+  return picker;
+}
+
+// Hovers the message to raise its action toolbar. The toolbar is rendered
+// outside the message, in a popover whose id carries the message id — which is
+// the only thing tying the two together, so it is matched on rather than
+// assumed: reacting to whatever else is hovered would be worse than failing.
+async function openMessageActions(page, message, mid) {
+  await message.scrollIntoViewIfNeeded();
+  await message.hover();
+
+  const actions = page.locator(`[data-tid="message-actions-container"][id="${mid}-popover-surface"]`);
+  await actions.waitFor({ state: 'visible', timeout: MESSAGE_ACTIONS_TIMEOUT_MS }).catch((err) => {
+    throw new Error(
+      `The action toolbar of message ${mid} did not open on hover (no visible `
+      + `[data-tid="message-actions-container"] with id "${mid}-popover-surface"). The Teams DOM `
+      + 'has probably changed.',
+      { cause: err }
+    );
+  });
+  return actions;
+}
+
+// The picker's clickable emoji buttons, which callers narrow to the one they
+// are after. The picker keeps hidden copies of its grids in the DOM and those
+// cannot be clicked, so only what is actually rendered counts as a match.
+export function pickerButtons(picker) {
+  return picker.locator('[data-tid^="emoticon-button-"]:visible');
+}
+
+// Finds a button in the open picker, scrolling the list until one turns up.
+// The caller says what it is looking for; the locator is asked again at every
+// step, so it picks up whatever that step has just rendered. Returns the first
+// match, or null if the whole list was walked without one.
+async function findPickerButton(page, buttons) {
+  for (let step = 0; step < MAX_PICKER_SCROLL_STEPS; step++) {
+    if (await buttons.count() > 0) return buttons.first();
+
+    const scrolled = await scrollPicker(page, PICKER_SCROLL_FRACTION);
+    if (scrolled.reason === 'no-content') {
+      throw Object.assign(new Error(
+        'The reaction picker has no emoji list ([data-tid="unified-picker-emojis-content"]), so '
+        + 'no emoji could be searched. The Teams DOM has probably changed.'
+      ), { systemic: true });
+    }
+    // A list with nothing to scroll — one that fits on screen, or a filtered
+    // set — was searched in full above, so it is a plain "not in the picker",
+    // the same as reaching the bottom.
+    if (scrolled.reason === 'not-scrollable' || scrolled.after === scrolled.before) return null;
+    await page.waitForTimeout(PICKER_SETTLE_MS);
+  }
+  return null;
+}
+
+// Scrolls the picker's emoji list down by a fraction of its height. Returns the
+// scrollTop before and after the move, or a reason why nothing moved — kept
+// apart because "the picker is not there" is a DOM change while "there is
+// nothing to scroll" is an ordinary short list.
+function scrollPicker(page, fraction) {
+  return page.evaluate((fraction) => {
+    const content = document.querySelector('[data-tid="reaction-picker-root"] [data-tid="unified-picker-emojis-content"]');
+    if (!content) return { reason: 'no-content' };
+    // The element that scrolls is an unnamed wrapper inside the emoji content,
+    // so it is picked out by being the one with something to scroll.
+    const scrollers = [...content.querySelectorAll('*')].filter(el =>
+      el.scrollHeight > el.clientHeight && ['auto', 'scroll', 'overlay'].includes(getComputedStyle(el).overflowY));
+    if (!scrollers.length) return { reason: 'not-scrollable' };
+    // Nested wrappers can overflow by a few pixels each, and the first in
+    // document order is not necessarily the emoji grid — the grid is the one
+    // with a whole virtualised list's worth of scrolling left in it.
+    const scroller = scrollers.reduce((widest, el) =>
+      el.scrollHeight - el.clientHeight > widest.scrollHeight - widest.clientHeight ? el : widest);
+    const before = scroller.scrollTop;
+    scroller.scrollTop = before + scroller.clientHeight * fraction;
+    return { before, after: scroller.scrollTop };
+  }, fraction);
 }

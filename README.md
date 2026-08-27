@@ -1,7 +1,8 @@
 # teams-cli
 
 Small Playwright-based CLI for automating Microsoft Teams (web) — capture a
-login session, then post, read and react to chat messages from the command line.
+login session, then post and read chat messages from the command line, and leave
+reactions on them or take them back.
 
 ## Requirements
 
@@ -191,7 +192,34 @@ example), the first one it offers is used.
 The chat history is scrolled back until the messages are found, so reacting to an
 old message takes as long as reading that far back. Reacting is a toggle in
 Teams, so a reaction you already left is never clicked again — that would take
-it back; such a message reports the existing reaction and is left as it is.
+it back; to take one back on purpose, use `unreact-to-message.mjs` below.
+
+### 5. Take a reaction back
+
+Removes the `<emoji>` reaction *you* left on the messages `<message ids>`. It
+takes the same arguments as `react-to-message.mjs`, including the comma-separated
+list of ids, and undoes exactly what that command does:
+
+```bash
+nix develop .#playwright --command node unreact-to-message.mjs "<chat name>" "<message ids>" "<emoji>"
+```
+
+```bash
+nix develop .#playwright --command node unreact-to-message.mjs "Developers" "1785922526738,1785922530011" "👍"
+```
+
+Only your own reaction can be removed — Teams offers no way to take back someone
+else's. A message you have not reacted to with that emoji is therefore reported
+as having nothing to remove, rather than treated as a failure, so re-running the
+command is harmless.
+
+The reaction that is taken back is the exact one you left, not merely one that
+looks the same: where several of the picker's emoji share a character, clicking
+the wrong one of them would add a second reaction instead of removing the first.
+If you left more than one of those look-alikes on the same message — which takes
+reacting by hand in the client, since `react-to-message.mjs` leaves a message
+that already carries your reaction alone — every one of them is taken back, and
+the run says how many.
 
 ## The browser daemon
 
@@ -249,10 +277,12 @@ which the other scripts restore before navigating.
 
 `teams.mjs` holds what the scripts share — obtaining a Teams page (from the
 daemon, or from a browser of the command's own), the preamble both login scripts
-run before they can open a browser, finding and opening a chat by name, and
-scrolling the message pane back through the history — so each script only
-contains its own logic. `daemon.mjs` is the client side of the daemon:
-finding it, starting it, and serialising commands against it.
+run before they can open a browser, finding and opening a chat by name, scrolling
+the message pane back through the history, and everything the two reaction
+commands do alike (their arguments, the walk to each message of a list, the hover
+toolbar and the emoji picker) — so each script only contains its own logic.
+`daemon.mjs` is the client side of the daemon: finding it, starting it, and
+serialising commands against it.
 
 ## Configuration
 
