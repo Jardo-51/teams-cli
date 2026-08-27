@@ -191,7 +191,30 @@ example), the first one it offers is used.
 The chat history is scrolled back until the messages are found, so reacting to an
 old message takes as long as reading that far back. Reacting is a toggle in
 Teams, so a reaction you already left is never clicked again — that would take
-it back; such a message reports the existing reaction and is left as it is.
+it back; to take one back on purpose, use `unreact-to-message.mjs` below.
+
+### 5. Take a reaction back
+
+Removes the `<emoji>` reaction *you* left on the messages `<message ids>`. It
+takes the same arguments as `react-to-message.mjs`, including the comma-separated
+list of ids, and undoes exactly what that command does:
+
+```bash
+nix develop .#playwright --command node unreact-to-message.mjs "<chat name>" "<message ids>" "<emoji>"
+```
+
+```bash
+nix develop .#playwright --command node unreact-to-message.mjs "Developers" "1785922526738,1785922530011" "👍"
+```
+
+Only your own reaction can be removed — Teams offers no way to take back someone
+else's. A message you have not reacted to with that emoji is therefore reported
+as having nothing to remove, rather than treated as a failure, so re-running the
+command is harmless.
+
+The reaction that is taken back is the exact one you left, not merely one that
+looks the same: where several of the picker's emoji share a character, clicking
+the wrong one of them would add a second reaction instead of removing the first.
 
 ## The browser daemon
 
