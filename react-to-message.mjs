@@ -152,6 +152,10 @@ try {
       + `${failures.length} failed` + (notAttempted ? `, ${notAttempted} not attempted.` : '.')
     );
   }
+  // A single-id run has nothing to aggregate: the wrapper would make its
+  // headline a count and push the sentence saying what to do about it into the
+  // [errors] array underneath. Raised unchanged, it reads as it always did.
+  if (messageIds.length === 1 && failures.length === 1) throw failures[0];
   if (failures.length) {
     throw new AggregateError(
       failures,
