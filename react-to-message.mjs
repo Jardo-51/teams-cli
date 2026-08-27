@@ -1,17 +1,23 @@
 import {
-  openTeams, waitForChatList, openChat, scrollMessageIntoView, messageSelector, messageLocator,
+  openTeams, waitForChatList, openChat, scrollToNewest, scrollMessageIntoView, messageSelector,
+  messageLocator,
 } from './teams.mjs';
 
 // Usage:
-//   nix develop .#playwright --command node react-to-message.mjs "<chat name>" "<message id>" "<emoji>"
+//   nix develop .#playwright --command node react-to-message.mjs "<chat name>" "<message ids>" "<emoji>"
 //
-// Reacts with <emoji> to the message <message id> in the Teams chat whose name
-// matches <chat name>. The id and the emoji are the ones read-chat-messages.mjs
-// reports, so its output can be fed straight back in.
+// Reacts with <emoji> to the message <message ids> in the Teams chat whose name
+// matches <chat name>. Several ids can be given as one comma-separated list, in
+// which case every one of those messages gets the reaction. The ids and the
+// emoji are the ones read-chat-messages.mjs reports, so its output can be fed
+// straight back in.
 //
 // Reacting is a toggle in Teams, so a reaction we already left is never clicked
-// again — that would take it back. Such a run reports the existing reaction and
-// changes nothing.
+// again — that would take it back. Such a message reports the existing reaction
+// and is left as it is.
+//
+// A message that cannot be reached does not stop the ones after it: the run
+// works through the whole list and fails at the end with what went wrong.
 
 // How often the walk back through the history may pause for a fetch of older
 // messages. The target can be arbitrarily far back, so the pauses are needed
@@ -43,21 +49,35 @@ const MESSAGE_TIMEOUT_MS = 15000;
 // ordinary outcome rather than a failure.
 const REACTION_SETTLE_MS = 5000;
 
-const [chatName, messageId, emoji] = process.argv.slice(2);
+const [chatName, messageIdList, emoji] = process.argv.slice(2);
 
-if (!chatName || !messageId || !emoji) {
-  console.log('Usage: node react-to-message.mjs "<chat name>" "<message id>" "<emoji>"');
-  console.log('  <message id>   the "id" of a message, as reported by read-chat-messages.mjs');
+if (!chatName || !messageIdList || !emoji) {
+  console.log('Usage: node react-to-message.mjs "<chat name>" "<message ids>" "<emoji>"');
+  console.log('  <message ids>  the "id" of a message, as reported by read-chat-messages.mjs,');
+  console.log('                 or several of them as a comma-separated list');
   console.log('  <emoji>        the emoji character to react with, e.g. "👍"');
+  process.exit(1);
+}
+
+// The same message twice would have the second turn find the reaction the first
+// one left and report it as already there, so the list is reduced to its
+// distinct ids. Blank entries — a trailing or doubled comma — are dropped
+// rather than refused, since they say nothing about which messages are meant.
+const messageIds = [...new Set(messageIdList.split(',').map(id => id.trim()).filter(Boolean))];
+
+if (!messageIds.length) {
+  console.log(`No message id in "${messageIdList}" — expected an id, or several as a comma-separated list.`);
   process.exit(1);
 }
 
 // Both values end up inside CSS attribute selectors, so anything that could
 // break out of one is refused rather than escaped — no message id or emoji
 // legitimately contains these characters.
-if (!/^[A-Za-z0-9_.:-]+$/.test(messageId)) {
-  console.log(`Invalid message id "${messageId}" — expected the id read-chat-messages.mjs reports, e.g. "1785922526738".`);
-  process.exit(1);
+for (const messageId of messageIds) {
+  if (!/^[A-Za-z0-9_.:-]+$/.test(messageId)) {
+    console.log(`Invalid message id "${messageId}" — expected the id read-chat-messages.mjs reports, e.g. "1785922526738".`);
+    process.exit(1);
+  }
 }
 if (/["'\\]/.test(emoji)) {
   console.log(`Invalid emoji "${emoji}" — expected a single emoji character, e.g. "👍".`);
@@ -78,19 +98,59 @@ try {
   await waitForChatList(page);
   const resolvedName = await openChat(page, chatName);
 
-  // The pane opens at the newest messages, so an older target is reached by
-  // scrolling back — the same walk read-chat-messages.mjs makes.
-  console.log(`Looking for message ${messageId}...`);
-  if (!await scrollMessageIntoView(page, messageId, { maxHistoryWaits: MAX_HISTORY_WAITS })) {
+  let reacted = 0;
+  let alreadyReacted = 0;
+  const failures = [];
+
+  for (const messageId of messageIds) {
+    try {
+      if (await reactToMessage(page, messageId, resolvedName)) {
+        reacted++;
+        console.log(`Reacted with "${emoji}" to message ${messageId} in "${resolvedName}".`);
+      } else {
+        alreadyReacted++;
+        console.log(`Already reacted with "${emoji}" to message ${messageId} — leaving it as it is.`);
+      }
+    } catch (err) {
+      // One unreachable message must not cost the rest of the list its
+      // reaction, so what went wrong is kept and the run moves on. The
+      // collected failures are raised together once the list is done.
+      console.log(`Could not react to message ${messageId}: ${err.message}`);
+      failures.push(err);
+    }
+  }
+
+  if (messageIds.length > 1) {
+    console.log(
+      `${messageIds.length} message(s): ${reacted} reacted, ${alreadyReacted} already reacted, `
+      + `${failures.length} failed.`
+    );
+  }
+  if (failures.length) {
+    throw new AggregateError(
+      failures,
+      `Could not react to ${failures.length} of ${messageIds.length} message(s) in "${resolvedName}".`
+    );
+  }
+} finally {
+  await close();
+}
+
+// Leaves our reaction on one message: finds it in the history, reads the pills
+// it already carries and clicks the emoji unless we reacted with it before.
+// Returns whether the reaction was applied by this run.
+async function reactToMessage(page, mid, resolvedName) {
+  console.log(`Looking for message ${mid}...`);
+  if (!await findMessage(page, mid)) {
     throw new Error(
-      `Message ${messageId} was not found in "${resolvedName}" — the history was scrolled back `
+      `Message ${mid} was not found in "${resolvedName}" — the history was scrolled back `
       + 'as far as it goes without the message turning up. Check that the id belongs to this '
       + 'chat and that the message has not been deleted.'
     );
   }
 
-  const message = messageLocator(page, messageId);
-  console.log(`Found: ${await describe(page, messageId)}`);
+  const message = messageLocator(page, mid);
+  console.log(`Found: ${await describe(page, mid)}`);
 
   // The pane is virtualised, so the message may have been mounted a moment ago
   // with its reaction row still to come. Reading the pills before they render
@@ -102,12 +162,19 @@ try {
   // it. Ours are the pills the client marks as pressed.
   const ownPill = message.locator('[data-tid="diverse-reaction-pill-button"][aria-pressed="true"]')
     .filter({ has: emojiImage(page) });
-  const applied = await ownPill.count() === 0 && await react(page, message, messageId, ownPill);
-  console.log(applied
-    ? `Reacted with "${emoji}" to message ${messageId} in "${resolvedName}".`
-    : `Already reacted with "${emoji}" to this message — leaving it as it is.`);
-} finally {
-  await close();
+  return await ownPill.count() === 0 && await react(page, message, mid, ownPill);
+}
+
+// Brings the message into the pane. The pane opens at the newest messages and
+// the walk only ever goes back, so an older target is reached by scrolling —
+// the same walk read-chat-messages.mjs makes. A target that is not rendered at
+// all may equally lie ahead of where the previous message left the pane, and
+// that direction is only reachable from the bottom, so the walk restarts there.
+// Messages read from one period are normally mounted together, in which case
+// this costs nothing.
+async function findMessage(page, mid) {
+  if (await messageLocator(page, mid).count() === 0) await scrollToNewest(page);
+  return scrollMessageIntoView(page, mid, { maxHistoryWaits: MAX_HISTORY_WAITS });
 }
 
 // Gives a freshly rendered message time to render its reaction row, so that the
