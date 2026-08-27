@@ -85,10 +85,32 @@ async function removeReaction(page, mid, resolvedName, findMessage) {
   await settleReactions(message);
 
   const ownPills = ownReactionPills(page, message, emoji);
-  const removed = await ownPills.count() > 0 && await unreact(page, message, mid, ownPills);
+  const removed = await hasOwnPill(ownPills) && await unreact(page, message, mid, ownPills);
   if (removed) console.log(`Removed our "${emoji}" reaction from message ${mid} in "${resolvedName}".`);
   else console.log(`Message ${mid} carries no "${emoji}" reaction of ours — nothing to remove.`);
   return removed;
+}
+
+// How long our own pill is given to turn up before the message is called
+// unreacted.
+const OWN_PILL_SETTLE_MS = 5000;
+
+// Whether the message carries a reaction of ours to take back.
+//
+// A pill that has not rendered yet looks exactly like one that was never left,
+// and settleReactions does not tell the two apart: it waits for the message's
+// *first* pill, so on a message already showing someone else's reaction it is
+// satisfied before ours has arrived — or before aria-pressed has settled on it.
+// So an absence is given a second look rather than believed on the first read.
+// This is the one verdict of this command that is reported as a success and
+// then never revisited: the reacting command re-reads the pills right before it
+// clicks and waits for the outcome afterwards, whereas "nothing to remove"
+// leaves the reaction sitting there and the run looking as if it had done its
+// job.
+async function hasOwnPill(ownPills) {
+  if (await ownPills.count() > 0) return true;
+  await ownPills.first().waitFor({ state: 'visible', timeout: OWN_PILL_SETTLE_MS }).catch(() => {});
+  return await ownPills.count() > 0;
 }
 
 // Removes the reaction: works out which of the picker's buttons applied it,
