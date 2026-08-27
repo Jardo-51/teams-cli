@@ -1,7 +1,7 @@
 import {
-  REACTION_TIMEOUT_MS, actOnMessages, createMessageFinder, describeMessage, emojiArgumentError,
-  findPickerButton, messageLocator, openChat, openReactionPicker, openTeams, ownReactionPills,
-  parseMessageIds, pickerButtons, settleReactions, waitForChatList,
+  REACTION_TIMEOUT_MS, actOnMessages, clickPickerButton, createMessageFinder, describeMessage,
+  emojiArgumentError, messageLocator, openChat, openTeams, ownReactionPills, parseMessageIds,
+  pickerButtons, settleReactions, waitForChatList,
 } from './teams.mjs';
 
 // Usage:
@@ -173,81 +173,68 @@ async function unreact(page, message, mid, ownPills) {
   // character leave two pills that look alike, and only one of them is going.
   const pill = pressedPill(message, itemId, mid);
 
-  let pickerOpen = false;
-  try {
-    const picker = await openReactionPicker(page, message, mid);
-    pickerOpen = true;
+  return clickPickerButton(page, message, mid, {
+    buttons: picker => reactionButtons(page, picker, itemId),
 
-    const button = await findPickerButton(page, reactionButtons(page, picker, itemId));
-    if (!button) {
-      // Said of this reaction rather than of the run: another message in the
-      // list may well carry one the picker does have a button for.
-      throw new Error(
-        `The reaction on message ${mid} ("${itemId}") is not among the picker's emoji, so there is `
-        + 'no button to click to take it back. The Teams DOM has probably changed.'
-      );
-    }
+    // Said of this reaction rather than of the run: another message in the list
+    // may well carry one the picker does have a button for.
+    notInPicker: () => new Error(
+      `The reaction on message ${mid} ("${itemId}") is not among the picker's emoji, so there is `
+      + 'no button to click to take it back. The Teams DOM has probably changed.'
+    ),
+
     // Opening the picker and walking it gave the reaction plenty of time to be
-    // taken back from somewhere else, so the pill is asked for once more right
-    // before the click — clicking now would put the reaction back on.
-    if (await pill.count() === 0) return false;
+    // taken back from somewhere else, and clicking the emoji now would put it
+    // back on rather than leave things as they are.
+    stillNeeded: async () => await pill.count() > 0,
 
-    await button.click();
-    // Clicking an emoji closes the picker, so from here on there is nothing
-    // left to dismiss.
-    pickerOpen = false;
+    confirm: () => confirmRemoved(page, message, mid, pill),
+  });
+}
 
-    // A pill goes away entirely when the last person un-reacts, but only loses
-    // its pressed state when others reacted with it too — so what is waited on
-    // is the pressed pill, which covers both.
-    await pill.first()
-      .waitFor({ state: 'detached', timeout: REACTION_TIMEOUT_MS })
-      // The cause is carried along, so a wait that failed for some other
-      // reason — a crashed page, a closed target — is not read as a reaction
-      // that would not go.
-      .catch((err) => {
-        throw new Error(
-          `The "${emoji}" reaction is still on message ${mid} ${REACTION_TIMEOUT_MS / 1000}s after `
-          + 'clicking it, so either it was not taken back, or the click landed on a different '
-          + 'reaction and added one. Check the chat before retrying.',
-          { cause: err }
-        );
-      });
-
-    // Nothing matching the locator is not the same thing as the reaction being
-    // gone, and two states other than a successful removal produce it: the pane
-    // is virtualised, so a message unmounted after the picker closed takes
-    // every selector inside it with it, and a reaction row polled in the middle
-    // of the re-render a reaction change triggers is momentarily empty too.
-    // Both would pass the wait above and have the message reported as done
-    // while it still carries the reaction. So the absence is only believed of a
-    // message that is still there to carry it, and the pill is asked for once
-    // more after a pause long enough for a row that was re-rendering to have
-    // put it back.
-    await page.waitForTimeout(REMOVAL_SETTLE_MS);
-    if (await message.count() === 0) {
+// Waits for the reaction to really be off the message, and says what it means
+// when it is not.
+async function confirmRemoved(page, message, mid, pill) {
+  // A pill goes away entirely when the last person un-reacts, but only loses
+  // its pressed state when others reacted with it too — so what is waited on
+  // is the pressed pill, which covers both.
+  await pill.first()
+    .waitFor({ state: 'detached', timeout: REACTION_TIMEOUT_MS })
+    // The cause is carried along, so a wait that failed for some other reason —
+    // a crashed page, a closed target — is not read as a reaction that would
+    // not go.
+    .catch((err) => {
       throw new Error(
-        `Message ${mid} left the message pane while the "${emoji}" reaction was being taken back, `
-        + 'so whether it was really removed could not be established. Read the chat back before '
-        + 'retrying.'
+        `The "${emoji}" reaction is still on message ${mid} ${REACTION_TIMEOUT_MS / 1000}s after `
+        + 'clicking it, so either it was not taken back, or the click landed on a different '
+        + 'reaction and added one. Check the chat before retrying.',
+        { cause: err }
       );
-    }
-    if (await pill.count() > 0) {
-      throw new Error(
-        `The "${emoji}" reaction is on message ${mid} again once its reaction row had re-rendered, `
-        + 'so the pill going missing right after the click was that re-render rather than the '
-        + 'removal. Check the chat before retrying.'
-      );
-    }
-    return true;
-  } finally {
-    // The picker is a modal popup: left open it covers the message pane, and
-    // the next message cannot even be hovered through it — one bad reaction
-    // would cost the rest of the list its turn for a reason of its own making.
-    // Only the ways out that leave it standing are dismissed, so that a run
-    // that went well sends no stray keystroke into the chat. A dismissal that
-    // itself fails must not replace the failure that led here.
-    if (pickerOpen) await page.keyboard.press('Escape').catch(() => {});
+    });
+
+  // Nothing matching the locator is not the same thing as the reaction being
+  // gone, and two states other than a successful removal produce it: the pane
+  // is virtualised, so a message unmounted after the picker closed takes every
+  // selector inside it with it, and a reaction row polled in the middle of the
+  // re-render a reaction change triggers is momentarily empty too. Both would
+  // pass the wait above and have the message reported as done while it still
+  // carries the reaction. So the absence is only believed of a message that is
+  // still there to carry it, and the pill is asked for once more after a pause
+  // long enough for a row that was re-rendering to have put it back.
+  await page.waitForTimeout(REMOVAL_SETTLE_MS);
+  if (await message.count() === 0) {
+    throw new Error(
+      `Message ${mid} left the message pane while the "${emoji}" reaction was being taken back, `
+      + 'so whether it was really removed could not be established. Read the chat back before '
+      + 'retrying.'
+    );
+  }
+  if (await pill.count() > 0) {
+    throw new Error(
+      `The "${emoji}" reaction is on message ${mid} again once its reaction row had re-rendered, `
+      + 'so the pill going missing right after the click was that re-render rather than the '
+      + 'removal. Check the chat before retrying.'
+    );
   }
 }
 

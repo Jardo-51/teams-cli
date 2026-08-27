@@ -1,7 +1,7 @@
 import {
-  REACTION_TIMEOUT_MS, actOnMessages, createMessageFinder, describeMessage, emojiArgumentError,
-  emojiImage, findPickerButton, messageLocator, openChat, openReactionPicker, openTeams,
-  ownReactionPills, parseMessageIds, pickerButtons, settleReactions, waitForChatList,
+  REACTION_TIMEOUT_MS, actOnMessages, clickPickerButton, createMessageFinder, describeMessage,
+  emojiArgumentError, emojiImage, messageLocator, openChat, openTeams, ownReactionPills,
+  parseMessageIds, pickerButtons, settleReactions, waitForChatList,
 } from './teams.mjs';
 
 // Usage:
@@ -92,37 +92,29 @@ async function reactToMessage(page, mid, resolvedName, findMessage) {
 
 // Applies the reaction: opens the message's reaction picker, finds the emoji in
 // it and waits for the reaction to land on the message. Returns false without
-// clicking anything if our reaction turns out to be there after all.
-async function react(page, message, mid, ownPills) {
-  let pickerOpen = false;
-  try {
-    const picker = await openReactionPicker(page, message, mid);
-    pickerOpen = true;
+// clicking anything if our reaction turns out to be there after all. The picker
+// itself is driven from teams.mjs, which both reaction commands share; what is
+// left here is this command's half of it — the button to click, and what the
+// message has to do about it.
+function react(page, message, mid, ownPills) {
+  return clickPickerButton(page, message, mid, {
+    buttons: picker => pickerButtons(picker).filter({ has: emojiImage(page, emoji) }),
 
-    const button = await findPickerButton(page, pickerButtons(picker).filter({ has: emojiImage(page, emoji) }));
-    if (!button) {
-      // The picker holds the same emoji for every message, so this verdict is
-      // about the emoji that was asked for, not about this message.
-      throw Object.assign(new Error(
-        `The emoji "${emoji}" is not in the reaction picker. Pass the emoji character itself `
-        + '(the "emoji" value read-chat-messages.mjs reports), not its name.'
-      ), { systemic: true });
-    }
-    // Opening the picker and walking it gave the message plenty of time to
-    // finish rendering, so the pills are asked once more right before the click
-    // — this is the last moment at which a reaction we had missed can still be
-    // spared.
-    if (await ownPills.count() > 0) return false;
+    // The picker holds the same emoji for every message, so this verdict is
+    // about the emoji that was asked for, not about this message.
+    notInPicker: () => Object.assign(new Error(
+      `The emoji "${emoji}" is not in the reaction picker. Pass the emoji character itself `
+      + '(the "emoji" value read-chat-messages.mjs reports), not its name.'
+    ), { systemic: true }),
 
-    await button.click();
-    // Clicking an emoji closes the picker, so from here on there is nothing
-    // left to dismiss.
-    pickerOpen = false;
+    // The last moment at which a reaction we had missed can still be spared:
+    // clicking the emoji now would take it back rather than leave it.
+    stillNeeded: async () => await ownPills.count() === 0,
 
     // The pill only appears once the reaction has been accepted, so waiting for
     // it is what tells us the reaction was actually left rather than just
     // clicked.
-    await ownPills.first()
+    confirm: () => ownPills.first()
       .waitFor({ state: 'visible', timeout: REACTION_TIMEOUT_MS })
       // The cause is carried along, so a wait that failed for some other
       // reason — a crashed page, a closed target — is not read as a reaction
@@ -134,15 +126,6 @@ async function react(page, message, mid, ownPills) {
           + 'click took it back. Check the chat before retrying.',
           { cause: err }
         );
-      });
-    return true;
-  } finally {
-    // The picker is a modal popup: left open it covers the message pane, and
-    // the next message cannot even be hovered through it — one bad emoji would
-    // cost the rest of the list its reaction for a reason of its own making.
-    // Only the ways out that leave it standing are dismissed, so that a run
-    // that went well sends no stray keystroke into the chat. A dismissal that
-    // itself fails must not replace the failure that led here.
-    if (pickerOpen) await page.keyboard.press('Escape').catch(() => {});
-  }
+      }),
+  });
 }

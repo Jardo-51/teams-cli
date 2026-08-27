@@ -850,11 +850,64 @@ export function emojiImage(page, emoji) {
   return page.locator(`img[alt="${bare}"], img[alt="${bare}\uFE0F"]`);
 }
 
+// Clicks one of the reaction picker's emoji on a message, and leaves the picker
+// closed whichever way that goes. This is everything the two commands do to a
+// message once they have decided it needs something done to it, and they do it
+// in the same eight steps; what differs is only which button they are after and
+// what they then expect to happen to the pill, which is what they pass in:
+//
+//   buttons(picker)  the candidates, narrowed from the open picker
+//   notInPicker()    the error to raise when the picker holds none of them
+//   stillNeeded()    whether the click is still wanted, asked after the walk
+//                    through the picker and before the click itself
+//   confirm()        waits for the message to show the change, and says what it
+//                    means if it never does
+//
+// Returns whether a button was clicked — false when stillNeeded() has changed
+// its mind in the meantime.
+//
+// Kept whole here rather than written out in each command because the picker is
+// a modal popup and the protocol around it is the delicate part: two copies of
+// it would have to be kept in step by hand, and a divergence would leave the
+// popup standing over the message pane for the rest of the list.
+export async function clickPickerButton(page, message, mid, { buttons, notInPicker, stillNeeded, confirm }) {
+  let pickerOpen = false;
+  try {
+    const picker = await openReactionPicker(page, message, mid);
+    pickerOpen = true;
+
+    const button = await findPickerButton(page, buttons(picker));
+    if (!button) throw notInPicker();
+    // Opening the picker and walking it gave the message plenty of time to
+    // finish rendering, so what the caller turns on is read off it once more
+    // right before the click. Reacting is a toggle, so a click that is no
+    // longer wanted does not amount to nothing — it does the opposite of what
+    // was asked for.
+    if (!await stillNeeded()) return false;
+
+    await button.click();
+    // Clicking an emoji closes the picker, so from here on there is nothing
+    // left to dismiss.
+    pickerOpen = false;
+
+    await confirm();
+    return true;
+  } finally {
+    // The picker is a modal popup: left open it covers the message pane, and
+    // the next message cannot even be hovered through it — one message that
+    // went wrong would cost the rest of the list its turn for a reason of its
+    // own making. Only the ways out that leave it standing are dismissed, so
+    // that a run that went well sends no stray keystroke into the chat. A
+    // dismissal that itself fails must not replace the failure that led here.
+    if (pickerOpen) await page.keyboard.press('Escape').catch(() => {});
+  }
+}
+
 // Opens the message's reaction picker and hands it back ready to be searched.
 // The picker is a modal popup: from the moment this returns, every way out of
 // the caller has to close it, or the message pane stays covered and the next
 // message cannot even be hovered.
-export async function openReactionPicker(page, message, mid) {
+async function openReactionPicker(page, message, mid) {
   const actions = await openMessageActions(page, message, mid);
 
   // Forced past the actionability check on purpose: for a message at the top of
@@ -911,7 +964,7 @@ export function pickerButtons(picker) {
 // The caller says what it is looking for; the locator is asked again at every
 // step, so it picks up whatever that step has just rendered. Returns the first
 // match, or null if the whole list was walked without one.
-export async function findPickerButton(page, buttons) {
+async function findPickerButton(page, buttons) {
   for (let step = 0; step < MAX_PICKER_SCROLL_STEPS; step++) {
     if (await buttons.count() > 0) return buttons.first();
 
