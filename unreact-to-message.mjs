@@ -24,6 +24,23 @@ import {
 // browser is gone — does stop it, since every id left would only meet the same
 // failure again.
 
+// How long our own pill is given to turn up before the message is called
+// unreacted.
+const OWN_PILL_SETTLE_MS = 5000;
+
+// How long the message's reaction row is given to finish re-rendering before
+// the pill's absence is read as the removal. The row is rebuilt whenever a
+// reaction changes, and a locator asked for the pill in the middle of that sees
+// nothing — the same answer a removed reaction gives.
+const REMOVAL_SETTLE_MS = 1000;
+
+// How many reactions of ours one message may have taken off it in a single run.
+// It is a bound rather than a limit anyone should reach: the picker holds three
+// buttons for the most crowded character and none of them can be applied twice.
+// What it is really for is keeping a pill that the removal does not actually
+// clear from being clicked round after round.
+const MAX_OWN_REACTIONS = 10;
+
 const [chatName, messageIdList, emoji] = process.argv.slice(2);
 
 if (!chatName || !messageIdList || !emoji) {
@@ -92,13 +109,6 @@ async function removeReaction(page, mid, resolvedName, findMessage) {
   return removed > 0;
 }
 
-// How many reactions of ours one message may have taken off it in a single run.
-// It is a bound rather than a limit anyone should reach: the picker holds three
-// buttons for the most crowded character and none of them can be applied twice.
-// What it is really for is keeping a pill that the removal does not actually
-// clear from being clicked round after round.
-const MAX_OWN_REACTIONS = 10;
-
 // Takes back every reaction of ours on the message that renders <emoji>, and
 // returns how many of them this run removed.
 //
@@ -123,10 +133,6 @@ async function unreactAll(page, message, mid, ownPills) {
   return removed;
 }
 
-// How long our own pill is given to turn up before the message is called
-// unreacted.
-const OWN_PILL_SETTLE_MS = 5000;
-
 // Whether the message carries a reaction of ours to take back.
 //
 // A pill that has not rendered yet looks exactly like one that was never left,
@@ -144,12 +150,6 @@ async function hasOwnPill(ownPills) {
   await ownPills.first().waitFor({ state: 'visible', timeout: OWN_PILL_SETTLE_MS }).catch(() => {});
   return await ownPills.count() > 0;
 }
-
-// How long the message's reaction row is given to finish re-rendering before
-// the pill's absence is read as the removal. The row is rebuilt whenever a
-// reaction changes, and a locator asked for the pill in the middle of that sees
-// nothing — the same answer a removed reaction gives.
-const REMOVAL_SETTLE_MS = 1000;
 
 // Removes the reaction: works out which of the picker's buttons applied it,
 // clicks that one again and waits for the pill to go. Returns false without
