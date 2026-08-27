@@ -167,17 +167,22 @@ nix develop .#playwright --command node react-to-message.mjs "Developers" "17859
 ```
 
 Several messages can be reacted to at once by passing their ids as one
-comma-separated list. Each of them gets the same emoji, and the chat is opened
-and walked back only once for the whole list, so this is quicker than a run per
-message:
+comma-separated list. Each of them gets the same emoji, and the browser and the
+chat are opened once for the whole list rather than once per message, so this is
+quicker than a run per message:
 
 ```bash
 nix develop .#playwright --command node react-to-message.mjs "Developers" "1785922526738,1785922530011,1785922612903" "👍"
 ```
 
+The ids are worked through newest first, whatever order they are given in, so
+one walk back through the history covers the whole list.
+
 A message that cannot be reached does not stop the ones after it: the run works
 through the whole list, says what happened to each, and only then fails, naming
-the messages it could not react to.
+the messages it could not react to. A failure that says nothing about the
+message — the emoji is not in the reaction picker, for instance — does stop it,
+since every id left would only meet the same failure again.
 
 Pass the emoji character itself, not its name. Where several of the picker's
 emoji share one character (Teams has both an animated and a plain 👏, for
