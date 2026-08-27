@@ -228,13 +228,20 @@ async function unreact(page, message, mid, ownPills) {
 // Null when neither is there, and equally when what is there could break out of
 // the CSS attribute selector it is about to be put into — no itemid legitimately
 // contains such characters.
+//
+// A read that fails outright is left to propagate rather than folded into that
+// null: the pill detaching between being counted and being asked, the page
+// going away, a throw inside the callback all say nothing about what the pill
+// carries, and answering them with "no usable itemid on it, the Teams DOM has
+// probably changed" would send whoever hits it looking for a change that never
+// happened.
 async function reactionItemId(pill, mid) {
   const itemId = await pill.evaluate((el, mid) => {
     const img = el.querySelector('img[itemid]');
     if (img) return img.getAttribute('itemid');
     const labelId = el.getAttribute('aria-labelledby') ?? '';
     return new RegExp(`^message-(.+)-${mid}$`).exec(labelId)?.[1] ?? null;
-  }, mid).catch(() => null);
+  }, mid);
 
   return itemId && /^[A-Za-z0-9_.:-]+$/.test(itemId) ? itemId : null;
 }
