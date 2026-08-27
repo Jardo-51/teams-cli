@@ -123,7 +123,7 @@ try {
   let alreadyReacted = 0;
   const failures = [];
 
-  for (const messageId of orderedIds) {
+  for (const [index, messageId] of orderedIds.entries()) {
     try {
       if (await reactToMessage(page, messageId, resolvedName)) {
         reacted++;
@@ -143,7 +143,9 @@ try {
       // history, so the run stops here and reports what it has rather than
       // proving the same thing over and over.
       if (isSystemic(page, err)) {
-        console.log('This says nothing about the remaining messages either — stopping here.');
+        if (index < orderedIds.length - 1) {
+          console.log('This says nothing about the remaining messages either — stopping here.');
+        }
         break;
       }
     }
