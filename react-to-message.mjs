@@ -256,6 +256,7 @@ async function react(page, message, mid, ownPill) {
   // check is the wrong guard here and would only time out.
   await actions.locator('[data-tid="expanded-reactions-picker-entry"]').click({ force: true });
 
+  let dismissed = false;
   try {
     // The picker's frame appears before its emoji do, so wait for the list
     // itself — searching it while it is still empty would find nothing.
@@ -279,6 +280,9 @@ async function react(page, message, mid, ownPill) {
     if (await ownPill.count() > 0) return false;
 
     await button.click();
+    // Clicking an emoji closes the picker, so from here on there is nothing
+    // left to dismiss.
+    dismissed = true;
 
     // The pill only appears once the reaction has been accepted, so waiting for
     // it is what tells us the reaction was actually left rather than just
@@ -301,8 +305,10 @@ async function react(page, message, mid, ownPill) {
     // The picker is a modal popup: left open it covers the message pane, and
     // the next message cannot even be hovered through it — one bad emoji would
     // cost the rest of the list its reaction for a reason of its own making.
-    // A dismissal that itself fails must not replace the failure that led here.
-    await page.keyboard.press('Escape').catch(() => {});
+    // Only the ways out that leave it standing are dismissed, so that a run
+    // that went well sends no stray keystroke into the chat. A dismissal that
+    // itself fails must not replace the failure that led here.
+    if (!dismissed) await page.keyboard.press('Escape').catch(() => {});
   }
 }
 
