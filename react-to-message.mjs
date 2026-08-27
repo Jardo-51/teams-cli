@@ -6,7 +6,7 @@ import {
 // Usage:
 //   nix develop .#playwright --command node react-to-message.mjs "<chat name>" "<message ids>" "<emoji>"
 //
-// Reacts with <emoji> to the message <message ids> in the Teams chat whose name
+// Reacts with <emoji> to the messages <message ids> in the Teams chat whose name
 // matches <chat name>. Several ids can be given as one comma-separated list, in
 // which case every one of those messages gets the reaction. They are worked
 // through newest first, whatever order they are given in, so one walk back

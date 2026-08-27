@@ -152,7 +152,7 @@ web client.
 
 ### 4. React to a message
 
-Reacts with `<emoji>` to the message `<message ids>` in the chat whose name
+Reacts with `<emoji>` to the messages `<message ids>` in the chat whose name
 matches `<chat name>` (partial, case-insensitive).
 
 ```bash
