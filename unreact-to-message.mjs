@@ -239,8 +239,15 @@ async function reactionItemId(pill, mid) {
   const itemId = await pill.evaluate((el, mid) => {
     const img = el.querySelector('img[itemid]');
     if (img) return img.getAttribute('itemid');
+    // Matched by shape rather than by a pattern built around the id: an id may
+    // hold a dot, which a RegExp would read as "any character", so a label
+    // belonging to a message whose id merely resembles this one would match —
+    // and hand back an itemid that then goes straight into a click.
     const labelId = el.getAttribute('aria-labelledby') ?? '';
-    return new RegExp(`^message-(.+)-${mid}$`).exec(labelId)?.[1] ?? null;
+    const prefix = 'message-';
+    const suffix = `-${mid}`;
+    if (!labelId.startsWith(prefix) || !labelId.endsWith(suffix)) return null;
+    return labelId.slice(prefix.length, -suffix.length) || null;
   }, mid);
 
   return itemId && /^[A-Za-z0-9_.:-]+$/.test(itemId) ? itemId : null;
