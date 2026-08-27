@@ -552,22 +552,25 @@ export async function waitForOlderHistory(page) {
   return false;
 }
 
+// Both pane errors are marked systemic: a pane that cannot be walked cannot be
+// walked for any message, so a caller working through a list of them stops at
+// the first rather than reaching the same verdict once per id.
 export function viewportGoneError() {
-  return new Error(
+  return Object.assign(new Error(
     'The message pane viewport ([data-tid="message-pane-list-viewport"]) was not '
     + 'found, so the history cannot be scrolled. The Teams DOM has probably changed.'
-  );
+  ), { systemic: true });
 }
 
 // A pane that cannot scroll at all reports an unchanged scrollTop for every
 // step, which reads exactly like the top of the history. Nothing can be inferred
 // from such a pane, so callers stop rather than draw that conclusion.
 export function paneNotScrollableError({ clientHeight, overflowY }) {
-  return new Error(
+  return Object.assign(new Error(
     'The message pane viewport ([data-tid="message-pane-list-viewport"]) is not a '
     + `scroll container (height ${clientHeight}px, overflow-y "${overflowY}"), so the `
     + 'history cannot be scrolled. The Teams DOM has probably changed.'
-  );
+  ), { systemic: true });
 }
 
 // Brings a message into the rendered window, scrolling back through the history

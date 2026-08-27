@@ -1,17 +1,27 @@
 import {
-  openTeams, waitForChatList, openChat, scrollMessageIntoView, messageSelector, messageLocator,
+  openTeams, waitForChatList, openChat, scrollToNewest, scrollMessageIntoView, messageSelector,
+  messageLocator,
 } from './teams.mjs';
 
 // Usage:
-//   nix develop .#playwright --command node react-to-message.mjs "<chat name>" "<message id>" "<emoji>"
+//   nix develop .#playwright --command node react-to-message.mjs "<chat name>" "<message ids>" "<emoji>"
 //
-// Reacts with <emoji> to the message <message id> in the Teams chat whose name
-// matches <chat name>. The id and the emoji are the ones read-chat-messages.mjs
-// reports, so its output can be fed straight back in.
+// Reacts with <emoji> to the messages <message ids> in the Teams chat whose name
+// matches <chat name>. Several ids can be given as one comma-separated list, in
+// which case every one of those messages gets the reaction. They are worked
+// through newest first, whatever order they are given in, so one walk back
+// through the history covers the whole list. The ids and the emoji are the ones
+// read-chat-messages.mjs reports, so its output can be fed straight back in.
 //
 // Reacting is a toggle in Teams, so a reaction we already left is never clicked
-// again — that would take it back. Such a run reports the existing reaction and
-// changes nothing.
+// again — that would take it back. Such a message reports the existing reaction
+// and is left as it is.
+//
+// A message that cannot be reached does not stop the ones after it: the run
+// works through the whole list and fails at the end with what went wrong. A
+// failure that is not about the message at all — the emoji is not in the
+// picker, the pane cannot be walked — does stop it, since every id left would
+// only meet the same failure again.
 
 // How often the walk back through the history may pause for a fetch of older
 // messages. The target can be arbitrarily far back, so the pauses are needed
@@ -43,21 +53,35 @@ const MESSAGE_TIMEOUT_MS = 15000;
 // ordinary outcome rather than a failure.
 const REACTION_SETTLE_MS = 5000;
 
-const [chatName, messageId, emoji] = process.argv.slice(2);
+const [chatName, messageIdList, emoji] = process.argv.slice(2);
 
-if (!chatName || !messageId || !emoji) {
-  console.log('Usage: node react-to-message.mjs "<chat name>" "<message id>" "<emoji>"');
-  console.log('  <message id>   the "id" of a message, as reported by read-chat-messages.mjs');
+if (!chatName || !messageIdList || !emoji) {
+  console.log('Usage: node react-to-message.mjs "<chat name>" "<message ids>" "<emoji>"');
+  console.log('  <message ids>  the "id" of a message, as reported by read-chat-messages.mjs,');
+  console.log('                 or several of them as a comma-separated list');
   console.log('  <emoji>        the emoji character to react with, e.g. "👍"');
+  process.exit(1);
+}
+
+// The same message twice would have the second turn find the reaction the first
+// one left and report it as already there, so the list is reduced to its
+// distinct ids. Blank entries — a trailing or doubled comma — are dropped
+// rather than refused, since they say nothing about which messages are meant.
+const messageIds = [...new Set(messageIdList.split(',').map(id => id.trim()).filter(Boolean))];
+
+if (!messageIds.length) {
+  console.log(`No message id in "${messageIdList}" — expected an id, or several as a comma-separated list.`);
   process.exit(1);
 }
 
 // Both values end up inside CSS attribute selectors, so anything that could
 // break out of one is refused rather than escaped — no message id or emoji
 // legitimately contains these characters.
-if (!/^[A-Za-z0-9_.:-]+$/.test(messageId)) {
-  console.log(`Invalid message id "${messageId}" — expected the id read-chat-messages.mjs reports, e.g. "1785922526738".`);
-  process.exit(1);
+for (const messageId of messageIds) {
+  if (!/^[A-Za-z0-9_.:-]+$/.test(messageId)) {
+    console.log(`Invalid message id "${messageId}" — expected the id read-chat-messages.mjs reports, e.g. "1785922526738".`);
+    process.exit(1);
+  }
 }
 if (/["'\\]/.test(emoji)) {
   console.log(`Invalid emoji "${emoji}" — expected a single emoji character, e.g. "👍".`);
@@ -72,25 +96,99 @@ if (!/[^\x00-\x7F]/.test(emoji)) {
   process.exit(1);
 }
 
+// The history walk only ever scrolls back, so the ids are worked through newest
+// first: every target after the first is then older than where the pane already
+// stands, and one walk carries on through the whole list instead of each id
+// sending it back to the newest messages. The ids are epoch milliseconds, so
+// ordering them numerically orders them in time; an id that is not a plain
+// number carries no such order, so a list holding one is left in the order it
+// was given.
+const orderedIds = messageIds.every(id => /^\d+$/.test(id))
+  ? [...messageIds].sort((a, b) => Number(b) - Number(a))
+  : messageIds;
+
+// Whether the pane still stands where the chat opened it, at the newest
+// messages. The walk below only ever goes back, so this is what says whether
+// what the walk has already passed can still be reached without returning to
+// the bottom first.
+let paneAtNewest = true;
+
 const { page, close } = await openTeams();
 
 try {
   await waitForChatList(page);
   const resolvedName = await openChat(page, chatName);
 
-  // The pane opens at the newest messages, so an older target is reached by
-  // scrolling back — the same walk read-chat-messages.mjs makes.
-  console.log(`Looking for message ${messageId}...`);
-  if (!await scrollMessageIntoView(page, messageId, { maxHistoryWaits: MAX_HISTORY_WAITS })) {
+  let reacted = 0;
+  let alreadyReacted = 0;
+  const failures = [];
+
+  for (const [index, messageId] of orderedIds.entries()) {
+    try {
+      if (await reactToMessage(page, messageId, resolvedName)) {
+        reacted++;
+        console.log(`Reacted with "${emoji}" to message ${messageId} in "${resolvedName}".`);
+      } else {
+        alreadyReacted++;
+        console.log(`Already reacted with "${emoji}" to message ${messageId} — leaving it as it is.`);
+      }
+    } catch (err) {
+      // One unreachable message must not cost the rest of the list its
+      // reaction, so what went wrong is kept and the run moves on. The
+      // collected failures are raised together once the list is done.
+      console.log(`Could not react to message ${messageId}: ${err.message}`);
+      failures.push(err);
+      // Unless the failure was never about this message: the same verdict
+      // awaits every id left, each after another full walk back through the
+      // history, so the run stops here and reports what it has rather than
+      // proving the same thing over and over.
+      if (isSystemic(page, err)) {
+        if (index < orderedIds.length - 1) {
+          console.log('This says nothing about the remaining messages either — stopping here.');
+        }
+        break;
+      }
+    }
+  }
+
+  if (messageIds.length > 1) {
+    // A run stopped by a systemic failure leaves ids it never looked at, and
+    // counting them as anything else would misreport what happened to them.
+    const notAttempted = messageIds.length - reacted - alreadyReacted - failures.length;
+    console.log(
+      `${messageIds.length} message(s): ${reacted} reacted, ${alreadyReacted} already reacted, `
+      + `${failures.length} failed` + (notAttempted ? `, ${notAttempted} not attempted.` : '.')
+    );
+  }
+  // A single-id run has nothing to aggregate: the wrapper would make its
+  // headline a count and push the sentence saying what to do about it into the
+  // [errors] array underneath. Raised unchanged, it reads as it always did.
+  if (messageIds.length === 1 && failures.length === 1) throw failures[0];
+  if (failures.length) {
+    throw new AggregateError(
+      failures,
+      `Could not react to ${failures.length} of ${messageIds.length} message(s) in "${resolvedName}".`
+    );
+  }
+} finally {
+  await close();
+}
+
+// Leaves our reaction on one message: finds it in the history, reads the pills
+// it already carries and clicks the emoji unless we reacted with it before.
+// Returns whether the reaction was applied by this run.
+async function reactToMessage(page, mid, resolvedName) {
+  console.log(`Looking for message ${mid}...`);
+  if (!await findMessage(page, mid)) {
     throw new Error(
-      `Message ${messageId} was not found in "${resolvedName}" — the history was scrolled back `
+      `Message ${mid} was not found in "${resolvedName}" — the history was scrolled back `
       + 'as far as it goes without the message turning up. Check that the id belongs to this '
       + 'chat and that the message has not been deleted.'
     );
   }
 
-  const message = messageLocator(page, messageId);
-  console.log(`Found: ${await describe(page, messageId)}`);
+  const message = messageLocator(page, mid);
+  console.log(`Found: ${await describe(page, mid)}`);
 
   // The pane is virtualised, so the message may have been mounted a moment ago
   // with its reaction row still to come. Reading the pills before they render
@@ -102,12 +200,39 @@ try {
   // it. Ours are the pills the client marks as pressed.
   const ownPill = message.locator('[data-tid="diverse-reaction-pill-button"][aria-pressed="true"]')
     .filter({ has: emojiImage(page) });
-  const applied = await ownPill.count() === 0 && await react(page, message, messageId, ownPill);
-  console.log(applied
-    ? `Reacted with "${emoji}" to message ${messageId} in "${resolvedName}".`
-    : `Already reacted with "${emoji}" to this message — leaving it as it is.`);
-} finally {
-  await close();
+  return await ownPill.count() === 0 && await react(page, message, mid, ownPill);
+}
+
+// Whether a failure was about the run rather than about the message it happened
+// on — the emoji is not in the picker, the pane cannot be walked at all, the
+// browser is gone. The scripts mark such errors as they raise them; a page that
+// has closed under us is the same verdict arrived at from the other side.
+function isSystemic(page, err) {
+  return err?.systemic === true || page.isClosed();
+}
+
+// Brings the message into the pane. The pane opens at the newest messages and
+// the walk only ever goes back, so an older target is reached by scrolling —
+// the same walk read-chat-messages.mjs makes. Since the ids are handled newest
+// first, the walk carries on from where the previous message left it rather
+// than starting over.
+//
+// A target that is neither rendered nor older than the pane lies ahead of it,
+// and that direction is only reachable from the newest end, so a walk that came
+// up empty is tried once more from there. A walk that started at the newest end
+// has already seen the whole history, so it is not repeated — an id that
+// belongs to another chat costs one walk, not two.
+async function findMessage(page, mid) {
+  const startedAtNewest = paneAtNewest;
+  // Either walk may leave the pane part way back through the history.
+  paneAtNewest = false;
+
+  if (await scrollMessageIntoView(page, mid, { maxHistoryWaits: MAX_HISTORY_WAITS })) return true;
+  if (startedAtNewest) return false;
+
+  console.log(`Message ${mid} is not behind the pane — looking again from the newest messages...`);
+  await scrollToNewest(page);
+  return scrollMessageIntoView(page, mid, { maxHistoryWaits: MAX_HISTORY_WAITS });
 }
 
 // Gives a freshly rendered message time to render its reaction row, so that the
@@ -132,41 +257,61 @@ async function react(page, message, mid, ownPill) {
   // the right target — it is just visually overlapped — so the receives-events
   // check is the wrong guard here and would only time out.
   await actions.locator('[data-tid="expanded-reactions-picker-entry"]').click({ force: true });
-  // The picker's frame appears before its emoji do, so wait for the list
-  // itself — searching it while it is still empty would find nothing.
-  const picker = page.locator('[data-tid="reaction-picker-root"]');
-  await picker.locator('[data-tid^="emoticon-button-"]').first()
-    .waitFor({ state: 'visible', timeout: PICKER_TIMEOUT_MS });
 
-  const button = await findEmojiButton(page, picker);
-  if (!button) {
-    throw new Error(
-      `The emoji "${emoji}" is not in the reaction picker. Pass the emoji character itself `
-      + '(the "emoji" value read-chat-messages.mjs reports), not its name.'
-    );
+  let dismissed = false;
+  try {
+    // The picker's frame appears before its emoji do, so wait for the list
+    // itself — searching it while it is still empty would find nothing.
+    const picker = page.locator('[data-tid="reaction-picker-root"]');
+    await picker.locator('[data-tid^="emoticon-button-"]').first()
+      .waitFor({ state: 'visible', timeout: PICKER_TIMEOUT_MS });
+
+    const button = await findEmojiButton(page, picker);
+    if (!button) {
+      // The picker holds the same emoji for every message, so this verdict is
+      // about the emoji that was asked for, not about this message.
+      throw Object.assign(new Error(
+        `The emoji "${emoji}" is not in the reaction picker. Pass the emoji character itself `
+        + '(the "emoji" value read-chat-messages.mjs reports), not its name.'
+      ), { systemic: true });
+    }
+    // Opening the picker and walking it gave the message plenty of time to
+    // finish rendering, so the pills are asked once more right before the click
+    // — this is the last moment at which a reaction we had missed can still be
+    // spared.
+    if (await ownPill.count() > 0) return false;
+
+    await button.click();
+    // Clicking an emoji closes the picker, so from here on there is nothing
+    // left to dismiss.
+    dismissed = true;
+
+    // The pill only appears once the reaction has been accepted, so waiting for
+    // it is what tells us the reaction was actually left rather than just
+    // clicked.
+    await ownPill.first()
+      .waitFor({ state: 'visible', timeout: REACTION_TIMEOUT_MS })
+      // The cause is carried along, so a wait that failed for some other
+      // reason — a crashed page, a closed target — is not read as a reaction
+      // gone missing.
+      .catch((err) => {
+        throw new Error(
+          `The "${emoji}" reaction is not on message ${mid} ${REACTION_TIMEOUT_MS / 1000}s after `
+          + 'clicking it, so either it was not saved, or it was already there unrendered and the '
+          + 'click took it back. Check the chat before retrying.',
+          { cause: err }
+        );
+      });
+    return true;
+  } finally {
+    // The picker is a modal popup: left open it covers the message pane, and
+    // the next message cannot even be hovered through it — one bad emoji would
+    // cost the rest of the list its reaction for a reason of its own making.
+    // Only the ways out that leave it standing are dismissed, so that a run
+    // that went well sends no stray keystroke into the chat. A dismissal that
+    // itself fails must not replace the failure that led here.
+    if (!dismissed) await page.keyboard.press('Escape').catch(() => {});
   }
-  // Opening the picker and walking it gave the message plenty of time to finish
-  // rendering, so the pills are asked once more right before the click — this is
-  // the last moment at which a reaction we had missed can still be spared.
-  if (await ownPill.count() > 0) return false;
-
-  await button.click();
-
-  // The pill only appears once the reaction has been accepted, so waiting for
-  // it is what tells us the reaction was actually left rather than just clicked.
-  await ownPill.first()
-    .waitFor({ state: 'visible', timeout: REACTION_TIMEOUT_MS })
-    // The cause is carried along, so a wait that failed for some other reason —
-    // a crashed page, a closed target — is not read as a reaction gone missing.
-    .catch((err) => {
-      throw new Error(
-        `The "${emoji}" reaction is not on message ${mid} ${REACTION_TIMEOUT_MS / 1000}s after `
-        + 'clicking it, so either it was not saved, or it was already there unrendered and the '
-        + 'click took it back. Check the chat before retrying.',
-        { cause: err }
-      );
-    });
-  return true;
 }
 
 // Hovers the message to raise its action toolbar. The toolbar is rendered
@@ -201,10 +346,10 @@ async function findEmojiButton(page, picker) {
 
     const scrolled = await scrollPicker(page, PICKER_SCROLL_FRACTION);
     if (scrolled.reason === 'no-content') {
-      throw new Error(
+      throw Object.assign(new Error(
         'The reaction picker has no emoji list ([data-tid="unified-picker-emojis-content"]), so '
         + 'no emoji could be searched. The Teams DOM has probably changed.'
-      );
+      ), { systemic: true });
     }
     // A list with nothing to scroll — one that fits on screen, or a filtered
     // set — was searched in full above, so it is a plain "not in the picker",

@@ -152,28 +152,46 @@ web client.
 
 ### 4. React to a message
 
-Reacts with `<emoji>` to the message `<message id>` in the chat whose name
+Reacts with `<emoji>` to the messages `<message ids>` in the chat whose name
 matches `<chat name>` (partial, case-insensitive).
 
 ```bash
-nix develop .#playwright --command node react-to-message.mjs "<chat name>" "<message id>" "<emoji>"
+nix develop .#playwright --command node react-to-message.mjs "<chat name>" "<message ids>" "<emoji>"
 ```
 
-The id and the emoji are the ones `read-chat-messages.mjs` reports, so its
+The ids and the emoji are the ones `read-chat-messages.mjs` reports, so its
 output can be fed straight back in:
 
 ```bash
 nix develop .#playwright --command node react-to-message.mjs "Developers" "1785922526738" "👍"
 ```
 
+Several messages can be reacted to at once by passing their ids as one
+comma-separated list. Each of them gets the same emoji, and the browser and the
+chat are opened once for the whole list rather than once per message, so this is
+quicker than a run per message:
+
+```bash
+nix develop .#playwright --command node react-to-message.mjs "Developers" "1785922526738,1785922530011,1785922612903" "👍"
+```
+
+The ids are worked through newest first, whatever order they are given in, so
+one walk back through the history covers the whole list.
+
+A message that cannot be reached does not stop the ones after it: the run works
+through the whole list, says what happened to each, and only then fails, naming
+the messages it could not react to. A failure that says nothing about the
+message — the emoji is not in the reaction picker, for instance — does stop it,
+since every id left would only meet the same failure again.
+
 Pass the emoji character itself, not its name. Where several of the picker's
 emoji share one character (Teams has both an animated and a plain 👏, for
 example), the first one it offers is used.
 
-The chat history is scrolled back until the message is found, so reacting to an
+The chat history is scrolled back until the messages are found, so reacting to an
 old message takes as long as reading that far back. Reacting is a toggle in
 Teams, so a reaction you already left is never clicked again — that would take
-it back; such a run reports the existing reaction and changes nothing.
+it back; such a message reports the existing reaction and is left as it is.
 
 ## The browser daemon
 
