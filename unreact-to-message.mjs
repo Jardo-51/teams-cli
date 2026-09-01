@@ -1,7 +1,7 @@
 import {
   REACTION_TIMEOUT_MS, actOnMessages, clickPickerButton, createMessageFinder, describeMessage,
-  emojiArgumentError, messageLocator, openChat, openTeams, ownReactionPills, parseMessageIds,
-  pickerButtons, settleReactions, waitForChatList,
+  emojiArgumentError, ensureEmojiCatalog, messageLocator, openChat, openTeams, ownReactionPills,
+  parseMessageIds, pickerButtons, settleReactions, waitForChatList,
 } from './teams.mjs';
 
 // Usage:
@@ -66,6 +66,9 @@ const { page, close } = await openTeams();
 
 try {
   await waitForChatList(page);
+  // Before the chat is opened, so that a catalog that has to be synced again
+  // costs one reload here rather than one after the history has been walked.
+  await ensureEmojiCatalog(page);
   const resolvedName = await openChat(page, chatName);
   const findMessage = createMessageFinder(page);
 

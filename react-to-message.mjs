@@ -1,7 +1,7 @@
 import {
-  REACTION_TIMEOUT_MS, actOnMessages, clickPickerButton, createMessageFinder, describeMessage,
-  emojiArgumentError, emojiImage, messageLocator, openChat, openTeams, ownReactionPills,
-  parseMessageIds, pickerButtons, settleReactions, waitForChatList,
+  PROFILE_DIR, REACTION_TIMEOUT_MS, actOnMessages, clickPickerButton, createMessageFinder,
+  describeMessage, emojiArgumentError, emojiImage, ensureEmojiCatalog, messageLocator, openChat,
+  openTeams, ownReactionPills, parseMessageIds, pickerButtons, settleReactions, waitForChatList,
 } from './teams.mjs';
 
 // Usage:
@@ -49,6 +49,9 @@ const { page, close } = await openTeams();
 
 try {
   await waitForChatList(page);
+  // Before the chat is opened, so that a catalog that has to be synced again
+  // costs one reload here rather than one after the history has been walked.
+  await ensureEmojiCatalog(page);
   const resolvedName = await openChat(page, chatName);
   const findMessage = createMessageFinder(page);
 
@@ -101,10 +104,14 @@ function react(page, message, mid, ownPills) {
     buttons: picker => pickerButtons(picker).filter({ has: emojiImage(page, emoji) }),
 
     // The picker holds the same emoji for every message, so this verdict is
-    // about the emoji that was asked for, not about this message.
+    // about the emoji that was asked for, not about this message. The catalog
+    // behind the picker was checked at the start of the run, so it is named
+    // here only for the case where it could not be read at all.
     notInPicker: () => Object.assign(new Error(
       `The emoji "${emoji}" is not in the reaction picker. Pass the emoji character itself `
-      + '(the "emoji" value read-chat-messages.mjs reports), not its name.'
+      + '(the "emoji" value read-chat-messages.mjs reports), not its name. If it is a character '
+      + `Teams does offer, the profile's emoji catalog is missing it: delete ${PROFILE_DIR}/ and `
+      + 'log in again to have Teams build a new one.'
     ), { systemic: true }),
 
     // The last moment at which a reaction we had missed can still be spared:

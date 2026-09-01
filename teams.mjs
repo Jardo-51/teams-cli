@@ -652,6 +652,16 @@ const REACTION_SETTLE_MS = 5000;
 // a reaction is only really applied, or really taken back, once the server has
 // accepted it.
 export const REACTION_TIMEOUT_MS = 15000;
+// How long the client is given to sync its emoji catalog again after an
+// incomplete one has been dropped. The sync runs on its own once the tab is
+// back up, so this only bounds how long a command waits for it.
+const EMOJI_CATALOG_SYNC_TIMEOUT_MS = 60000;
+// How often the catalog is asked whether that sync has filled it in.
+const EMOJI_CATALOG_POLL_MS = 2000;
+// The catalog's own category for the emoji we reached for most recently. It is
+// empty until we have picked one, which is a state of ours rather than a gap in
+// the catalog, so it is not counted as one.
+const RECENT_EMOJI_CATEGORY_ID = 'recent';
 
 // The message ids a command was given: one id, or several as a comma-separated
 // list. Blank entries — a trailing or a doubled comma — are dropped rather than
@@ -848,6 +858,121 @@ export function ownReactionPills(page, message, emoji) {
 export function emojiImage(page, emoji) {
   const bare = emoji.replace(/\uFE0F/g, '');
   return page.locator(`img[alt="${bare}"], img[alt="${bare}\uFE0F"]`);
+}
+
+// Makes sure the client has the whole emoji catalog before the picker is asked
+// for anything, dropping an incomplete one so that Teams syncs it again.
+//
+// The catalog lives in IndexedDB inside the persistent profile, and Teams fills
+// it in once. A sync that was cut short — the browser closed part way through
+// one — leaves behind a catalog the client treats as finished and never returns
+// to: the picker lists every category, but the ones the sync never reached
+// render as empty headings and no amount of scrolling finds an emoji in them.
+// "The emoji is not in the reaction picker" is then perfectly true and says
+// nothing about the emoji that was asked for, which is the failure this is here
+// to keep a command from reporting.
+//
+// Deleting the catalog is safe in the way clearing any cache is: it is Teams'
+// copy of a list Teams serves, and the reload below is what makes it fetch the
+// list again.
+export async function ensureEmojiCatalog(page) {
+  const missing = await emptyEmojiCategories(page);
+  if (!missing?.length) return;
+
+  console.log(
+    `The profile's emoji catalog has no emoji for ${missing.length} of its categories `
+    + `(${missing.join(', ')}), so an emoji from those cannot be found in the picker. `
+    + 'Dropping the catalog and reloading Teams to sync it again...'
+  );
+  // The deletion is asked for and not waited on, deliberately: the app is
+  // holding the database open, so the request reports "blocked" and stays
+  // pending until something closes that connection — which is the reload on the
+  // next line. Waiting for it to finish first would be waiting for a reload
+  // that has not happened yet.
+  await page.evaluate(async () => {
+    const name = (await indexedDB.databases()).map(db => db.name).find(n => n.includes('emoji-manager'));
+    if (name) indexedDB.deleteDatabase(name);
+  });
+  await loadTeams(page);
+
+  // The sync runs by itself from here; all that is left is to give it a moment,
+  // since a command that walked the picker before it finished would draw the
+  // same wrong conclusion as before.
+  const deadline = Date.now() + EMOJI_CATALOG_SYNC_TIMEOUT_MS;
+  for (;;) {
+    const stillMissing = await emptyEmojiCategories(page);
+    if (stillMissing?.length === 0) {
+      console.log('The emoji catalog is complete again.');
+      return;
+    }
+    if (Date.now() >= deadline) {
+      // Carried on with rather than raised: the picker is about to be walked
+      // anyway, and it — not this — is what decides whether the emoji that was
+      // actually asked for is there.
+      console.log(
+        'The emoji catalog has not finished syncing '
+        + `${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s after the reload — carrying on, but an emoji `
+        + 'it has not got to yet will still be reported as missing from the picker.'
+      );
+      return;
+    }
+    await page.waitForTimeout(EMOJI_CATALOG_POLL_MS);
+  }
+}
+
+// The titles of the catalog's categories that hold no emoji, or null when the
+// catalog cannot be read at all — it has not been created yet, or Teams has
+// moved it, in which case there is nothing to conclude and nothing to repair.
+//
+// Categories are compared rather than counted because the catalog's size is
+// Teams' business and moves with their emoji set, while a category the catalog
+// itself names and then has nothing for is wrong however large the rest of it
+// is.
+function emptyEmojiCategories(page) {
+  return page.evaluate(async (recentId) => {
+    const readAll = (store) => new Promise((resolve, reject) => {
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    const name = (await indexedDB.databases()).map(db => db.name).find(n => n.includes('emoji-manager'));
+    if (!name) return null;
+
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(name);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+      // Only ever reached if the database went away between being listed and
+      // being opened, in which case this call has just created an empty one.
+      // Nothing can be said about a catalog we made up ourselves.
+      request.onupgradeneeded = () => { request.transaction.abort(); resolve(null); };
+    }).catch(() => null);
+    if (!db) return null;
+
+    try {
+      const stores = ['teams-emoji-metadata', 'teams-emoji'];
+      if (!stores.every(store => [...db.objectStoreNames].includes(store))) return null;
+
+      // Both reads are asked for before either is awaited: an IndexedDB
+      // transaction commits as soon as control returns to the event loop with
+      // nothing outstanding on it, so a second request issued after awaiting
+      // the first would land on a transaction that has already closed.
+      const transaction = db.transaction(stores, 'readonly');
+      const pending = stores.map(store => readAll(transaction.objectStore(store)));
+      const [[metadata], emoji] = await Promise.all(pending);
+
+      const categories = metadata?.categories;
+      if (!Array.isArray(categories) || !categories.length) return null;
+
+      const filled = new Set(emoji.map(e => e.categoryId));
+      return categories
+        .filter(c => c.id !== recentId && !filled.has(c.id))
+        .map(c => c.title ?? c.id);
+    } finally {
+      db.close();
+    }
+  }, RECENT_EMOJI_CATEGORY_ID).catch(() => null);
 }
 
 // Clicks one of the reaction picker's emoji on a message, and leaves the picker
