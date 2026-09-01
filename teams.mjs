@@ -668,6 +668,9 @@ const RECENT_EMOJI_CATEGORY_ID = 'recent';
 // are assumptions about storage that is Teams' own and undocumented, so they
 // are the first things to go stale when Teams ships a change to it — which is
 // why they are named here together rather than written out where they are read.
+// They were read off a signed-in web client in September 2026; nothing warns
+// when they stop matching, so a catalog check that has started reporting
+// "could not be read" is the sign to look here first.
 const EMOJI_DB_NAME_FRAGMENT = 'emoji-manager';
 const EMOJI_METADATA_STORE = 'teams-emoji-metadata';
 const EMOJI_STORE = 'teams-emoji';
