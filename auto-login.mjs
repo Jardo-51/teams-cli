@@ -298,13 +298,17 @@ try {
   await context.storageState({ path: AUTH_PATH });
   console.log(`Login captured — cookies saved to "${AUTH_PATH}", profile at "${PROFILE_DIR}".`);
 
-  // The chat list is not the client having finished loading, and this is the
-  // one script that closes the browser itself the moment it appears — the
-  // daemon stays up for its idle timeout and manual-login.mjs waits to be
-  // closed by hand, so neither of those cuts a background sync short. Closing
-  // here in the seconds the emoji catalog is being written is what leaves the
-  // half-filled catalog the reaction commands then have to repair, so the sync
-  // is given its chance before the browser goes.
+  // The chat list is not the client having finished loading. Closing the
+  // browser in the seconds the emoji catalog is being written is what leaves
+  // the half-filled catalog the reaction commands then have to repair, so the
+  // sync is given its chance before the browser goes.
+  //
+  // This is the run that has to do the waiting because it is the run that
+  // creates the catalog. Other commands close browsers too — under
+  // TEAMS_DAEMON=0 every one of them gets its own and closes it the moment its
+  // work is done — but they only ever open a profile whose catalog a login has
+  // already seen through, and Teams does not fetch a catalog it has marked
+  // finished. There is nothing left for them to cut short.
   //
   // After the capture rather than before it: the session is what this run is
   // for and is already on disk by now, so nothing about the waiting below can
