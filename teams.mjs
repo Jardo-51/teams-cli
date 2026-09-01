@@ -884,14 +884,18 @@ export async function ensureEmojiCatalog(page) {
     + `(${missing.join(', ')}), so an emoji from those cannot be found in the picker. `
     + 'Dropping the catalog and reloading Teams to sync it again...'
   );
+  // Every catalog in the profile goes, not just the one the gap was found in:
+  // which of them the client is using cannot be told from the outside, and one
+  // left behind is one the check keeps finding the same gap in, run after run.
+  //
   // The deletion is asked for and not waited on, deliberately: the app is
   // holding the database open, so the request reports "blocked" and stays
   // pending until something closes that connection — which is the reload on the
   // next line. Waiting for it to finish first would be waiting for a reload
   // that has not happened yet.
   await page.evaluate(async () => {
-    const name = (await indexedDB.databases()).map(db => db.name).find(n => n.includes('emoji-manager'));
-    if (name) indexedDB.deleteDatabase(name);
+    const names = (await indexedDB.databases()).map(db => db.name).filter(n => n?.includes('emoji-manager'));
+    for (const name of names) indexedDB.deleteDatabase(name);
   });
   await loadTeams(page);
 
@@ -920,9 +924,17 @@ export async function ensureEmojiCatalog(page) {
   }
 }
 
-// The titles of the catalog's categories that hold no emoji, or null when the
-// catalog cannot be read at all — it has not been created yet, or Teams has
-// moved it, in which case there is nothing to conclude and nothing to repair.
+// The titles of the catalog's categories that hold no emoji, or null when no
+// catalog can be read at all — none has been created yet, or Teams has moved
+// it, in which case there is nothing to conclude and nothing to repair.
+//
+// Every catalog in the profile is read, not just one. Teams names the database
+// after the signed-in user and the profile directory outlives a re-login, so a
+// profile that has ever held a second account carries more than one of them,
+// and which one the client is using cannot be told from the name. Reporting a
+// category that is empty in any of them drives the repair from the worst copy;
+// picking one of them instead would as easily read a stale account's healthy
+// catalog and leave the live one broken, silently and for good.
 //
 // Categories are compared rather than counted because the catalog's size is
 // Teams' business and moves with their emoji set, while a category the catalog
@@ -936,42 +948,50 @@ function emptyEmojiCategories(page) {
       request.onerror = () => reject(request.error);
     });
 
-    const name = (await indexedDB.databases()).map(db => db.name).find(n => n.includes('emoji-manager'));
-    if (!name) return null;
+    const readCatalog = async (name) => {
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open(name);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+        // Only ever reached if the database went away between being listed and
+        // being opened, in which case this call has just created an empty one.
+        // Nothing can be said about a catalog we made up ourselves.
+        request.onupgradeneeded = () => { request.transaction.abort(); resolve(null); };
+      }).catch(() => null);
+      if (!db) return null;
 
-    const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open(name);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-      // Only ever reached if the database went away between being listed and
-      // being opened, in which case this call has just created an empty one.
-      // Nothing can be said about a catalog we made up ourselves.
-      request.onupgradeneeded = () => { request.transaction.abort(); resolve(null); };
-    }).catch(() => null);
-    if (!db) return null;
+      try {
+        const stores = ['teams-emoji-metadata', 'teams-emoji'];
+        if (!stores.every(store => [...db.objectStoreNames].includes(store))) return null;
 
-    try {
-      const stores = ['teams-emoji-metadata', 'teams-emoji'];
-      if (!stores.every(store => [...db.objectStoreNames].includes(store))) return null;
+        // Both reads are asked for before either is awaited: an IndexedDB
+        // transaction commits as soon as control returns to the event loop with
+        // nothing outstanding on it, so a second request issued after awaiting
+        // the first would land on a transaction that has already closed.
+        const transaction = db.transaction(stores, 'readonly');
+        const pending = stores.map(store => readAll(transaction.objectStore(store)));
+        const [[metadata], emoji] = await Promise.all(pending);
 
-      // Both reads are asked for before either is awaited: an IndexedDB
-      // transaction commits as soon as control returns to the event loop with
-      // nothing outstanding on it, so a second request issued after awaiting
-      // the first would land on a transaction that has already closed.
-      const transaction = db.transaction(stores, 'readonly');
-      const pending = stores.map(store => readAll(transaction.objectStore(store)));
-      const [[metadata], emoji] = await Promise.all(pending);
+        const categories = metadata?.categories;
+        if (!Array.isArray(categories) || !categories.length) return null;
 
-      const categories = metadata?.categories;
-      if (!Array.isArray(categories) || !categories.length) return null;
+        const filled = new Set(emoji.map(e => e.categoryId));
+        return categories
+          .filter(c => c.id !== recentId && !filled.has(c.id))
+          .map(c => c.title ?? c.id);
+      } finally {
+        db.close();
+      }
+    };
 
-      const filled = new Set(emoji.map(e => e.categoryId));
-      return categories
-        .filter(c => c.id !== recentId && !filled.has(c.id))
-        .map(c => c.title ?? c.id);
-    } finally {
-      db.close();
-    }
+    const names = (await indexedDB.databases()).map(db => db.name).filter(n => n?.includes('emoji-manager'));
+    // A catalog that could not be read drops out here rather than counting as
+    // one with nothing missing, so "no catalog at all" stays distinguishable
+    // from "every catalog is fine".
+    const catalogs = (await Promise.all(names.map(readCatalog))).filter(missing => missing !== null);
+    if (!catalogs.length) return null;
+
+    return [...new Set(catalogs.flat())];
   }, RECENT_EMOJI_CATEGORY_ID).catch(() => null);
 }
 
