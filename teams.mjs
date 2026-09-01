@@ -952,11 +952,24 @@ export async function ensureEmojiCatalog(page) {
           + 'unrepaired: stopping the browser daemon (node teams-daemon.mjs --stop) and running '
           + 'the command again closes every connection there is.'
         );
+      } else if (catalog?.emptyCategories.length) {
+        // Which of the two this is cannot be told from here, so neither is
+        // asserted: after a reload and a full minute, "still empty" is at least
+        // as likely to mean a category with nothing to put in it as a sync that
+        // is behind, and the categories are named so the reader can judge.
+        console.log(
+          `${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s after the reload the emoji catalog still has `
+          + `no emoji for ${catalog.emptyCategories.join(', ')} — carrying on. Either the sync has `
+          + 'not got that far, in which case an emoji from those will still be reported as missing '
+          + 'from the picker, or they are empty because there is nothing to put in them: a '
+          + 'category the tenant has uploaded no emoji of is listed by the catalog and stays empty '
+          + 'for good.'
+        );
       } else {
         console.log(
-          'The emoji catalog has not finished syncing '
-          + `${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s after the reload — carrying on, but an emoji `
-          + 'it has not got to yet will still be reported as missing from the picker.'
+          `The emoji catalog could not be read ${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s after the `
+          + 'reload — carrying on, but Teams has not brought it back yet, so whether the gap was '
+          + 'repaired is unknown.'
         );
       }
       return;
@@ -997,6 +1010,15 @@ function emojiDatabaseNames(page) {
 // Teams' business and moves with their emoji set, while a category the catalog
 // itself names and then has nothing for is wrong however large the rest of it
 // is.
+//
+// `recent` is the one category known to be empty for reasons of its own, and it
+// is unlikely to be the only one — a category the tenant has uploaded no emoji
+// of is listed here and legitimately holds nothing, and reads from here exactly
+// like one a sync missed. There is no telling the two apart short of knowing
+// which categories Teams ships as built-in, so such a category costs a repair
+// that cannot help it, on every run, for as long as it stays empty. What is
+// avoided is claiming otherwise: the message the repair's wait ends with names
+// both readings rather than asserting the sync is behind.
 //
 // That makes a category with nothing in it at all the only gap this recognises,
 // and a lower bound on the damage: nothing here knows how many emoji a category
