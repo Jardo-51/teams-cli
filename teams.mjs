@@ -664,6 +664,19 @@ const EMOJI_CATALOG_POLL_MS = 2000;
 // of one another, so a catalog this still is one nothing is writing to, not one
 // caught between two categories.
 const EMOJI_CATALOG_SETTLE_MS = 6000;
+// How long into a login's wait the sync is taken to have started by, before
+// which a still catalog is not taken as a finished one. Stillness can only ever
+// be asked of the catalogs that exist when it is asked, and the profile
+// directory outlives a re-login: a profile that has already held one account
+// carries that account's complete catalog, which sits there perfectly still
+// from the very first poll while the catalog the login is actually waiting for
+// has not been created yet. Waiting this out first is what keeps a wait from
+// settling on the wrong one and closing the browser on the sync it exists to
+// protect. Measured at 5.5-8s between the chat list and the first emoji
+// records, on a warm profile and a cold one alike, so this is comfortably over
+// twice the delay it covers; the cost is that a login whose catalog was already
+// complete waits here rather than returning at the first stillness.
+const EMOJI_CATALOG_SYNC_START_BY_MS = 20000;
 // The catalog's own category for the emoji we reached for most recently. It is
 // empty until we have picked one, which is a state of ours rather than a gap in
 // the catalog, so it is not counted as one.
@@ -898,15 +911,23 @@ export function emojiImage(page, emoji) {
 // for good — one the tenant has uploaded no emoji of — settles like any other,
 // where waiting for it to fill would sit out the whole budget on every login.
 //
+// Stillness on its own is not enough, though, because it is only ever asked of
+// the catalogs that are already there. A profile that has held another account
+// still holds that account's finished catalog, which is still from the first
+// poll onwards, so the wait is floored as well as bounded: nothing counts as
+// settled until the sync has had long enough to have created its database.
+//
 // Nothing here raises. A login that reached the chat list has done what it was
 // for, and a catalog that is short is repairable later by the commands that
 // care about it; all this can do is spare them the trouble, so it says how it
 // went and returns either way.
 export async function waitForEmojiCatalog(page) {
   console.log('Waiting for the emoji catalog to finish syncing...');
-  const deadline = Date.now() + EMOJI_CATALOG_SYNC_TIMEOUT_MS;
+  const started = Date.now();
+  const deadline = started + EMOJI_CATALOG_SYNC_TIMEOUT_MS;
+  const syncStartedBy = started + EMOJI_CATALOG_SYNC_START_BY_MS;
   let previous = null;
-  let unchangedSince = Date.now();
+  let unchangedSince = started;
   for (;;) {
     // The window being watched is one a person can close by hand, and a browser
     // that is gone is not a sync to wait for. Left quietly rather than
@@ -923,7 +944,15 @@ export async function waitForEmojiCatalog(page) {
     // catalog that has just grown is one being written to. Neither is stillness,
     // so both start the settle window over instead of ending the wait.
     if (counts !== null && counts === previous) {
-      if (Date.now() - unchangedSince >= EMOJI_CATALOG_SETTLE_MS) {
+      // Both bars have to be cleared, and they answer different questions.
+      // The settle window says nothing is writing to the catalogs that are
+      // here; the floor says the one this login is waiting for is among them,
+      // which on a reused profile the settle window alone cannot tell (the
+      // constant says why). Only the floor is measured from the start of the
+      // wait — a catalog that goes still late still gets its settle window in
+      // full, so this delays a return and never brings one forward.
+      const settled = Date.now() - unchangedSince >= EMOJI_CATALOG_SETTLE_MS;
+      if (settled && Date.now() >= syncStartedBy) {
         const total = Object.values(catalog.emojiCounts).reduce((sum, count) => sum + count, 0);
         if (!catalog.emptyCategories.length) {
           console.log(`The emoji catalog is complete (${total} emoji).`);
