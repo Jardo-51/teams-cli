@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
-import { beginLogin, waitForChatList, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
+import { beginLogin, waitForChatList, waitForEmojiCatalog, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node auto-login.mjs
@@ -297,6 +297,19 @@ try {
   // localStorage — expected, and it only happens this one time).
   await context.storageState({ path: AUTH_PATH });
   console.log(`Login captured — cookies saved to "${AUTH_PATH}", profile at "${PROFILE_DIR}".`);
+
+  // The chat list is not the client having finished loading, and this is the
+  // one script that closes the browser itself the moment it appears — the
+  // daemon stays up for its idle timeout and manual-login.mjs waits to be
+  // closed by hand, so neither of those cuts a background sync short. Closing
+  // here in the seconds the emoji catalog is being written is what leaves the
+  // half-filled catalog the reaction commands then have to repair, so the sync
+  // is given its chance before the browser goes.
+  //
+  // After the capture rather than before it: the session is what this run is
+  // for and is already on disk by now, so nothing about the waiting below can
+  // cost it.
+  await waitForEmojiCatalog(page);
 
   // Close the browser ourselves now that the session is saved. Closing the
   // context flushes the persistent profile to disk, so there is nothing left

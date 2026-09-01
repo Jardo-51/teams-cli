@@ -1,4 +1,4 @@
-import { beginLogin, waitForChatList, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
+import { beginLogin, waitForChatList, waitForEmojiCatalog, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node manual-login.mjs
@@ -27,6 +27,12 @@ try {
   // localStorage — expected, and it only happens this one time).
   await context.storageState({ path: AUTH_PATH });
   console.log(`Login captured — cookies saved to "${AUTH_PATH}", profile at "${PROFILE_DIR}".`);
+
+  // Waited for before the window is offered up, not after: Teams is still
+  // writing its emoji catalog for a few seconds after the chat list appears,
+  // and a window closed in that gap leaves the catalog half-filled. Nobody
+  // reading "you can close it now" should have to know that.
+  await waitForEmojiCatalog(page);
   console.log('You can close the browser window now.');
 
   // Wait for the window to close so the persistent profile is flushed too.
