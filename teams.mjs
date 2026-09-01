@@ -1082,12 +1082,19 @@ async function readEmojiCatalog(page) {
         // the first would land on a transaction that has already closed.
         const transaction = db.transaction(stores, 'readonly');
         const [metadata, emoji] = stores.map(store => transaction.objectStore(store));
-        const [[metadataRecord], { filled, count }] = await Promise.all([
+        const [metadataRecords, { filled, count }] = await Promise.all([
           readAll(metadata), scanEmoji(emoji),
         ]);
 
-        const categories = metadataRecord?.categories;
-        if (!Array.isArray(categories) || !categories.length) return null;
+        // The record that carries the categories is looked for rather than
+        // taken to be the first one. getAll() hands records back in key order,
+        // so "the first" is the right record only for as long as the store
+        // holds nothing besides it, which nothing here guarantees: a
+        // schema-version row or a second locale's list appearing alongside it
+        // would otherwise read the wrong record, find no categories on it and
+        // quietly switch the whole check off.
+        const categories = metadataRecords.find(record => Array.isArray(record?.categories))?.categories;
+        if (!categories?.length) return null;
 
         return {
           empty: categories.filter(c => c.id !== recentId && !filled.has(c.id)).map(c => c.title ?? c.id),
