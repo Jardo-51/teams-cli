@@ -195,8 +195,8 @@ way through it — leaves a catalog the client treats as finished, whose missing
 categories render as empty headings in the picker; every emoji in them then
 looks as though Teams does not have it. Both reaction commands check the catalog
 before they start, and an incomplete one is dropped and Teams reloaded so that
-it is fetched again. That costs one page load, on the run that finds it, and
-says so as it happens.
+it is fetched again. That costs one page load plus the wait for the sync (up to a
+minute, on the run that finds it), and says so as it happens.
 
 The chat history is scrolled back until the messages are found, so reacting to an
 old message takes as long as reading that far back. Reacting is a toggle in
