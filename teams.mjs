@@ -943,15 +943,18 @@ export async function ensureEmojiCatalog(page) {
       // actually asked for is there.
       //
       // Which of the two things went wrong is worth telling apart, because the
-      // answers differ. A catalog still holding exactly the emoji it held
-      // before is the one we asked to have deleted, still there: a
+      // answers differ. A database still holding exactly the emoji it held
+      // before is one we asked to have deleted, still there: a
       // deleteDatabase() stays blocked until every connection to it is closed,
       // and the reload only closes the ones the page itself holds — a service
       // worker's outlives it. Waiting longer would not have helped, so saying
-      // "not finished syncing" would send the reader the wrong way.
-      if (catalog?.emojiCount === before.emojiCount) {
+      // "not finished syncing" would send the reader the wrong way. One such
+      // database is enough to say so, whatever became of the others.
+      const survivor = Object.entries(catalog?.emojiCounts ?? {})
+        .find(([name, count]) => before.emojiCounts[name] === count);
+      if (survivor) {
         console.log(
-          `The emoji catalog still holds the same ${catalog.emojiCount} emoji it did before the `
+          `The emoji catalog still holds the same ${survivor[1]} emoji it did before the `
           + 'reload, so the deletion never went through — something outside the page, such as a '
           + 'service worker, is still holding the database open. Carrying on, but the gap is '
           + 'unrepaired: stopping the browser daemon (node teams-daemon.mjs --stop) and running '
@@ -1113,12 +1116,21 @@ async function readEmojiCatalog(page) {
     // A catalog that could not be read drops out here rather than counting as
     // one with nothing missing, so "no catalog at all" stays distinguishable
     // from "every catalog is fine".
-    const catalogs = (await Promise.all(names.map(readCatalog))).filter(catalog => catalog !== null);
+    const catalogs = (await Promise.all(names.map(async (name) => {
+      const catalog = await readCatalog(name);
+      return catalog && { name, ...catalog };
+    }))).filter(catalog => catalog !== null);
     if (!catalogs.length) return null;
 
     return {
       emptyCategories: [...new Set(catalogs.flatMap(catalog => catalog.empty))],
-      emojiCount: catalogs.reduce((total, catalog) => total + catalog.count, 0),
+      // Kept per database rather than summed, so that "this one was not
+      // deleted" stays askable of each of them. A total says only that
+      // something changed somewhere, which in a profile holding several
+      // catalogs is exactly what a blocked deletion looks like: the databases
+      // no client has open are deleted cleanly and take the total down with
+      // them, while the one that matters sits there untouched.
+      emojiCounts: Object.fromEntries(catalogs.map(catalog => [catalog.name, catalog.count])),
     };
   }, {
     names,
