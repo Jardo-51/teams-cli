@@ -29,7 +29,7 @@ suits you.
 
 **Manual.** Opens Teams in a visible browser. Log in by hand (including MFA); once
 the chat-list appears the session is saved automatically, and the script tells you
-when the client has finished loading and the window can be closed.
+when Teams has finished filling in its emoji catalog and the window can be closed.
 
 ```bash
 nix develop .#playwright --command node manual-login.mjs
