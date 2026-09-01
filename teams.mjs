@@ -676,6 +676,12 @@ const EMOJI_CATALOG_SETTLE_MS = 6000;
 // records, on a warm profile and a cold one alike, so this is comfortably over
 // twice the delay it covers; the cost is that a login whose catalog was already
 // complete waits here rather than returning at the first stillness.
+//
+// The same moment answers the opposite question, being where a catalog that has
+// never once been readable stops meaning "the sync has not got to it yet" and
+// starts meaning "there is nothing here this code can find" — the storage
+// assumptions below having gone stale. Past this point the sync has either
+// written something or it is not going to.
 const EMOJI_CATALOG_SYNC_START_BY_MS = 20000;
 // The catalog's own category for the emoji we reached for most recently. It is
 // empty until we have picked one, which is a state of ours rather than a gap in
@@ -928,6 +934,7 @@ export async function waitForEmojiCatalog(page) {
   const syncStartedBy = started + EMOJI_CATALOG_SYNC_START_BY_MS;
   let previous = null;
   let unchangedSince = started;
+  let everRead = false;
   for (;;) {
     // The window being watched is one a person can close by hand, and a browser
     // that is gone is not a sync to wait for. Left quietly rather than
@@ -936,6 +943,7 @@ export async function waitForEmojiCatalog(page) {
     if (page.isClosed()) return;
 
     const catalog = await readEmojiCatalog(page);
+    if (catalog) everRead = true;
     // Compared as text because it is only ever asked whether the counts are the
     // ones from the poll before, never how they differ.
     const counts = catalog && JSON.stringify(catalog.emojiCounts);
@@ -974,15 +982,28 @@ export async function waitForEmojiCatalog(page) {
       previous = counts;
       unchangedSince = Date.now();
     }
+    // A catalog that has not been readable once by the time the sync is due to
+    // have started is not a slow sync — it is a catalog this code can no longer
+    // find, and the rest of the budget cannot change that. Given the shorter
+    // deadline of the two so that the day the storage assumptions go stale is
+    // reported while the user is still watching, rather than as a silent minute
+    // on every login that the "waiting for the sync" line above misreads as the
+    // sync being slow.
+    if (!everRead && Date.now() >= syncStartedBy) {
+      console.log(
+        `${EMOJI_CATALOG_SYNC_START_BY_MS / 1000}s on there is still no emoji catalog to read — `
+        + 'carrying on. Teams has either not started the sync or has moved the catalog, which is '
+        + 'a difference a reaction command reports.'
+      );
+      return;
+    }
+    // Only ever a catalog that was read and went on changing: one that was
+    // never read has returned above, a good forty seconds earlier.
     if (Date.now() >= deadline) {
       console.log(
-        catalog === null
-          ? `${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s on there is still no emoji catalog to read — `
-            + 'carrying on. Teams has either not started the sync or has moved the catalog, which '
-            + 'is a difference a reaction command reports.'
-          : `The emoji catalog was still being written ${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s on `
-            + '— carrying on rather than waiting longer, so it may be left short. A reaction '
-            + 'command drops a short catalog and fetches it again.'
+        `The emoji catalog was still being written ${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s on `
+        + '— carrying on rather than waiting longer, so it may be left short. A reaction '
+        + 'command drops a short catalog and fetches it again.'
       );
       return;
     }
