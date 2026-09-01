@@ -982,6 +982,26 @@ function readEmojiCatalog(page) {
       request.onerror = () => reject(request.error);
     });
 
+    // Which categories the emoji store holds a record for, and how many records
+    // that is. Walked with a cursor rather than read with getAll(), which would
+    // materialise every emoji whole — keywords, shortcodes and all — for the
+    // one field on it that is looked at: this runs at the start of every
+    // reaction command, and again every couple of seconds throughout a repair,
+    // when the client is busy writing that same store back.
+    const scanEmoji = (store) => new Promise((resolve, reject) => {
+      const filled = new Set();
+      let count = 0;
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return resolve({ filled, count });
+        filled.add(cursor.value.categoryId);
+        count += 1;
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error);
+    });
+
     const readCatalog = async (name) => {
       const db = await new Promise((resolve, reject) => {
         const request = indexedDB.open(name);
@@ -1003,16 +1023,17 @@ function readEmojiCatalog(page) {
         // nothing outstanding on it, so a second request issued after awaiting
         // the first would land on a transaction that has already closed.
         const transaction = db.transaction(stores, 'readonly');
-        const pending = stores.map(store => readAll(transaction.objectStore(store)));
-        const [[metadata], emoji] = await Promise.all(pending);
+        const [metadataStore, emojiStore] = stores.map(store => transaction.objectStore(store));
+        const [[metadata], { filled, count }] = await Promise.all([
+          readAll(metadataStore), scanEmoji(emojiStore),
+        ]);
 
         const categories = metadata?.categories;
         if (!Array.isArray(categories) || !categories.length) return null;
 
-        const filled = new Set(emoji.map(e => e.categoryId));
         return {
           empty: categories.filter(c => c.id !== recentId && !filled.has(c.id)).map(c => c.title ?? c.id),
-          count: emoji.length,
+          count,
         };
       } finally {
         db.close();
