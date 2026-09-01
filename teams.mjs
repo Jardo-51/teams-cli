@@ -662,6 +662,15 @@ const EMOJI_CATALOG_POLL_MS = 2000;
 // empty until we have picked one, which is a state of ours rather than a gap in
 // the catalog, so it is not counted as one.
 const RECENT_EMOJI_CATEGORY_ID = 'recent';
+// Where the catalog lives in the profile's IndexedDB: a database whose name
+// carries this fragment (the rest of it names the signed-in user), holding the
+// list of categories in one store and the emoji themselves in the other. These
+// are assumptions about storage that is Teams' own and undocumented, so they
+// are the first things to go stale when Teams ships a change to it — which is
+// why they are named here together rather than written out where they are read.
+const EMOJI_DB_NAME_FRAGMENT = 'emoji-manager';
+const EMOJI_METADATA_STORE = 'teams-emoji-metadata';
+const EMOJI_STORE = 'teams-emoji';
 
 // The message ids a command was given: one id, or several as a comma-separated
 // list. Blank entries — a trailing or a doubled comma — are dropped rather than
@@ -907,10 +916,10 @@ export async function ensureEmojiCatalog(page) {
   // pending until something closes that connection — which is the reload on the
   // next line. Waiting for it to finish first would be waiting for a reload
   // that has not happened yet.
-  await page.evaluate(async () => {
-    const names = (await indexedDB.databases()).map(db => db.name).filter(n => n?.includes('emoji-manager'));
-    for (const name of names) indexedDB.deleteDatabase(name);
-  });
+  await page.evaluate(
+    names => { for (const name of names) indexedDB.deleteDatabase(name); },
+    await emojiDatabaseNames(page),
+  );
   await loadTeams(page);
 
   // The sync runs by itself from here; all that is left is to give it a moment,
@@ -956,6 +965,17 @@ export async function ensureEmojiCatalog(page) {
   }
 }
 
+// The profile's emoji catalogs, by database name. The check and the repair both
+// work from this rather than each recognising a catalog for itself: they have to
+// agree on which databases they are talking about, and one substring match is
+// easier to keep true to Teams than two copies of it.
+function emojiDatabaseNames(page) {
+  return page.evaluate(
+    fragment => indexedDB.databases().then(dbs => dbs.map(db => db.name).filter(n => n?.includes(fragment))),
+    EMOJI_DB_NAME_FRAGMENT,
+  );
+}
+
 // What the profile's emoji catalogs hold: the titles of the categories with no
 // emoji in them, and the number of emoji they hold altogether. Null when no
 // catalog can be read at all — none has been created yet, or Teams has moved
@@ -987,8 +1007,11 @@ export async function ensureEmojiCatalog(page) {
 // the picker with nothing said beforehand. Closing that would take a
 // per-category expected count to compare against, if the metadata record turns
 // out to carry one.
-function readEmojiCatalog(page) {
-  return page.evaluate(async (recentId) => {
+async function readEmojiCatalog(page) {
+  const names = await emojiDatabaseNames(page).catch(() => []);
+  if (!names.length) return null;
+
+  return page.evaluate(async ({ names, recentId, metadataStore, emojiStore }) => {
     const readAll = (store) => new Promise((resolve, reject) => {
       const request = store.getAll();
       request.onsuccess = () => resolve(request.result);
@@ -1028,7 +1051,7 @@ function readEmojiCatalog(page) {
       if (!db) return null;
 
       try {
-        const stores = ['teams-emoji-metadata', 'teams-emoji'];
+        const stores = [metadataStore, emojiStore];
         if (!stores.every(store => [...db.objectStoreNames].includes(store))) return null;
 
         // Both reads are asked for before either is awaited: an IndexedDB
@@ -1036,12 +1059,12 @@ function readEmojiCatalog(page) {
         // nothing outstanding on it, so a second request issued after awaiting
         // the first would land on a transaction that has already closed.
         const transaction = db.transaction(stores, 'readonly');
-        const [metadataStore, emojiStore] = stores.map(store => transaction.objectStore(store));
-        const [[metadata], { filled, count }] = await Promise.all([
-          readAll(metadataStore), scanEmoji(emojiStore),
+        const [metadata, emoji] = stores.map(store => transaction.objectStore(store));
+        const [[metadataRecord], { filled, count }] = await Promise.all([
+          readAll(metadata), scanEmoji(emoji),
         ]);
 
-        const categories = metadata?.categories;
+        const categories = metadataRecord?.categories;
         if (!Array.isArray(categories) || !categories.length) return null;
 
         return {
@@ -1053,7 +1076,6 @@ function readEmojiCatalog(page) {
       }
     };
 
-    const names = (await indexedDB.databases()).map(db => db.name).filter(n => n?.includes('emoji-manager'));
     // A catalog that could not be read drops out here rather than counting as
     // one with nothing missing, so "no catalog at all" stays distinguishable
     // from "every catalog is fine".
@@ -1064,7 +1086,12 @@ function readEmojiCatalog(page) {
       emptyCategories: [...new Set(catalogs.flatMap(catalog => catalog.empty))],
       emojiCount: catalogs.reduce((total, catalog) => total + catalog.count, 0),
     };
-  }, RECENT_EMOJI_CATEGORY_ID).catch(() => null);
+  }, {
+    names,
+    recentId: RECENT_EMOJI_CATEGORY_ID,
+    metadataStore: EMOJI_METADATA_STORE,
+    emojiStore: EMOJI_STORE,
+  }).catch(() => null);
 }
 
 // Clicks one of the reaction picker's emoji on a message, and leaves the picker
