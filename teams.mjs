@@ -876,9 +876,10 @@ export function emojiImage(page, emoji) {
 // copy of a list Teams serves, and the reload below is what makes it fetch the
 // list again.
 export async function ensureEmojiCatalog(page) {
-  const missing = await emptyEmojiCategories(page);
-  if (!missing?.length) return;
+  const before = await readEmojiCatalog(page);
+  if (!before?.emptyCategories.length) return;
 
+  const missing = before.emptyCategories;
   console.log(
     `The profile's emoji catalog has no emoji for ${missing.length} of its categories `
     + `(${missing.join(', ')}), so an emoji from those cannot be found in the picker. `
@@ -904,8 +905,8 @@ export async function ensureEmojiCatalog(page) {
   // same wrong conclusion as before.
   const deadline = Date.now() + EMOJI_CATALOG_SYNC_TIMEOUT_MS;
   for (;;) {
-    const stillMissing = await emptyEmojiCategories(page);
-    if (stillMissing?.length === 0) {
+    const catalog = await readEmojiCatalog(page);
+    if (catalog && !catalog.emptyCategories.length) {
       console.log('The emoji catalog is complete again.');
       return;
     }
@@ -913,20 +914,43 @@ export async function ensureEmojiCatalog(page) {
       // Carried on with rather than raised: the picker is about to be walked
       // anyway, and it — not this — is what decides whether the emoji that was
       // actually asked for is there.
-      console.log(
-        'The emoji catalog has not finished syncing '
-        + `${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s after the reload — carrying on, but an emoji `
-        + 'it has not got to yet will still be reported as missing from the picker.'
-      );
+      //
+      // Which of the two things went wrong is worth telling apart, because the
+      // answers differ. A catalog still holding exactly the emoji it held
+      // before is the one we asked to have deleted, still there: a
+      // deleteDatabase() stays blocked until every connection to it is closed,
+      // and the reload only closes the ones the page itself holds — a service
+      // worker's outlives it. Waiting longer would not have helped, so saying
+      // "not finished syncing" would send the reader the wrong way.
+      if (catalog?.emojiCount === before.emojiCount) {
+        console.log(
+          `The emoji catalog still holds the same ${catalog.emojiCount} emoji it did before the `
+          + 'reload, so the deletion never went through — something outside the page, such as a '
+          + 'service worker, is still holding the database open. Carrying on, but the gap is '
+          + 'unrepaired: stopping the browser daemon (node teams-daemon.mjs --stop) and running '
+          + 'the command again closes every connection there is.'
+        );
+      } else {
+        console.log(
+          'The emoji catalog has not finished syncing '
+          + `${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s after the reload — carrying on, but an emoji `
+          + 'it has not got to yet will still be reported as missing from the picker.'
+        );
+      }
       return;
     }
     await page.waitForTimeout(EMOJI_CATALOG_POLL_MS);
   }
 }
 
-// The titles of the catalog's categories that hold no emoji, or null when no
+// What the profile's emoji catalogs hold: the titles of the categories with no
+// emoji in them, and the number of emoji they hold altogether. Null when no
 // catalog can be read at all — none has been created yet, or Teams has moved
 // it, in which case there is nothing to conclude and nothing to repair.
+//
+// The count is carried alongside the titles because it is the only way to tell,
+// after a repair, whether the catalog on screen is the new one or the old one
+// the delete request never got to remove.
 //
 // Every catalog in the profile is read, not just one. Teams names the database
 // after the signed-in user and the profile directory outlives a re-login, so a
@@ -940,7 +964,7 @@ export async function ensureEmojiCatalog(page) {
 // Teams' business and moves with their emoji set, while a category the catalog
 // itself names and then has nothing for is wrong however large the rest of it
 // is.
-function emptyEmojiCategories(page) {
+function readEmojiCatalog(page) {
   return page.evaluate(async (recentId) => {
     const readAll = (store) => new Promise((resolve, reject) => {
       const request = store.getAll();
@@ -976,9 +1000,10 @@ function emptyEmojiCategories(page) {
         if (!Array.isArray(categories) || !categories.length) return null;
 
         const filled = new Set(emoji.map(e => e.categoryId));
-        return categories
-          .filter(c => c.id !== recentId && !filled.has(c.id))
-          .map(c => c.title ?? c.id);
+        return {
+          empty: categories.filter(c => c.id !== recentId && !filled.has(c.id)).map(c => c.title ?? c.id),
+          count: emoji.length,
+        };
       } finally {
         db.close();
       }
@@ -988,10 +1013,13 @@ function emptyEmojiCategories(page) {
     // A catalog that could not be read drops out here rather than counting as
     // one with nothing missing, so "no catalog at all" stays distinguishable
     // from "every catalog is fine".
-    const catalogs = (await Promise.all(names.map(readCatalog))).filter(missing => missing !== null);
+    const catalogs = (await Promise.all(names.map(readCatalog))).filter(catalog => catalog !== null);
     if (!catalogs.length) return null;
 
-    return [...new Set(catalogs.flat())];
+    return {
+      emptyCategories: [...new Set(catalogs.flatMap(catalog => catalog.empty))],
+      emojiCount: catalogs.reduce((total, catalog) => total + catalog.count, 0),
+    };
   }, RECENT_EMOJI_CATEGORY_ID).catch(() => null);
 }
 
