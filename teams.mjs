@@ -927,6 +927,11 @@ export async function ensureEmojiCatalog(page) {
   // same wrong conclusion as before.
   const deadline = Date.now() + EMOJI_CATALOG_SYNC_TIMEOUT_MS;
   for (;;) {
+    // A catalog that cannot be read means the opposite here of what it meant
+    // above. Before the delete it meant there was nothing to repair; after it,
+    // it means the database Teams is going to recreate is not there yet — the
+    // ordinary state of the first seconds after the reload — so it keeps the
+    // loop waiting rather than ending it.
     const catalog = await readEmojiCatalog(page);
     if (catalog && !catalog.emptyCategories.length) {
       console.log('The emoji catalog is complete again.');
