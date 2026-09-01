@@ -114,7 +114,7 @@ function react(page, message, mid, ownPills) {
       + '(the "emoji" value read-chat-messages.mjs reports), not its name. If it is a character '
       + "Teams does offer, the profile's emoji catalog is missing it, and what to do about that is "
       + 'in what this run said at the start: a catalog it could not read is one Teams has moved, '
-      + 'which needs the check taught where to look rather than anything doing to the profile.'
+      + 'which needs the check taught where to look rather than anything done to the profile.'
     ), { systemic: true }),
 
     // The last moment at which a reaction we had missed can still be spared:
