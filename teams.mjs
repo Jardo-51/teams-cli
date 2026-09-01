@@ -945,8 +945,13 @@ export async function waitForEmojiCatalog(page) {
     const catalog = await readEmojiCatalog(page);
     if (catalog) everRead = true;
     // Compared as text because it is only ever asked whether the counts are the
-    // ones from the poll before, never how they differ.
-    const counts = catalog && JSON.stringify(catalog.emojiCounts);
+    // ones from the poll before, never how they differ. Sorted first so that
+    // what is compared is the counts rather than the order they arrived in:
+    // the keys come out in whatever order indexedDB.databases() lists the
+    // databases, which nothing specifies, and a profile holding more than one
+    // catalog would otherwise be able to restart the settle window on a
+    // reshuffle alone — for the whole budget, without a single count moving.
+    const counts = catalog && JSON.stringify(Object.entries(catalog.emojiCounts).sort());
     // A catalog that cannot be read yet is the ordinary state of the first
     // seconds after a login — Teams has not created the database — and a
     // catalog that has just grown is one being written to. Neither is stillness,
