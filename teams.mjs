@@ -652,6 +652,28 @@ const REACTION_SETTLE_MS = 5000;
 // a reaction is only really applied, or really taken back, once the server has
 // accepted it.
 export const REACTION_TIMEOUT_MS = 15000;
+// How long the client is given to sync its emoji catalog again after an
+// incomplete one has been dropped. The sync runs on its own once the tab is
+// back up, so this only bounds how long a command waits for it.
+const EMOJI_CATALOG_SYNC_TIMEOUT_MS = 60000;
+// How often the catalog is asked whether that sync has filled it in.
+const EMOJI_CATALOG_POLL_MS = 2000;
+// The catalog's own category for the emoji we reached for most recently. It is
+// empty until we have picked one, which is a state of ours rather than a gap in
+// the catalog, so it is not counted as one.
+const RECENT_EMOJI_CATEGORY_ID = 'recent';
+// Where the catalog lives in the profile's IndexedDB: a database whose name
+// carries this fragment (the rest of it names the signed-in user), holding the
+// list of categories in one store and the emoji themselves in the other. These
+// are assumptions about storage that is Teams' own and undocumented, so they
+// are the first things to go stale when Teams ships a change to it — which is
+// why they are named here together rather than written out where they are read.
+// They were read off a signed-in web client in September 2026; nothing warns
+// when they stop matching, so a catalog check that has started reporting
+// "could not be read" is the sign to look here first.
+const EMOJI_DB_NAME_FRAGMENT = 'emoji-manager';
+const EMOJI_METADATA_STORE = 'teams-emoji-metadata';
+const EMOJI_STORE = 'teams-emoji';
 
 // The message ids a command was given: one id, or several as a comma-separated
 // list. Blank entries — a trailing or a doubled comma — are dropped rather than
@@ -848,6 +870,277 @@ export function ownReactionPills(page, message, emoji) {
 export function emojiImage(page, emoji) {
   const bare = emoji.replace(/\uFE0F/g, '');
   return page.locator(`img[alt="${bare}"], img[alt="${bare}\uFE0F"]`);
+}
+
+// Makes sure the client has the whole emoji catalog before the picker is asked
+// for anything, dropping an incomplete one so that Teams syncs it again.
+//
+// The catalog lives in IndexedDB inside the persistent profile, and Teams fills
+// it in once. A sync that was cut short — the browser closed part way through
+// one — leaves behind a catalog the client treats as finished and never returns
+// to: the picker lists every category, but the ones the sync never reached
+// render as empty headings and no amount of scrolling finds an emoji in them.
+// "The emoji is not in the reaction picker" is then perfectly true and says
+// nothing about the emoji that was asked for, which is the failure this is here
+// to keep a command from reporting.
+//
+// Deleting the catalog is safe in the way clearing any cache is: it is Teams'
+// copy of a list Teams serves, and the reload below is what makes it fetch the
+// list again.
+export async function ensureEmojiCatalog(page) {
+  const before = await readEmojiCatalog(page);
+  // Said out loud rather than passed over in silence: a profile whose catalog
+  // cannot be read is one where this check is off for good, and the reaction
+  // commands' "not in the reaction picker" error names that case as the one
+  // thing it can still be. A reader who was told nothing has no way to know
+  // they are in it, and will as readily conclude that the check ran and passed.
+  if (before === null) {
+    console.log(
+      "The profile's emoji catalog could not be read, so whether it is complete cannot be told — "
+      + 'carrying on. Teams has most likely moved it, in which case an emoji missing from the '
+      + 'picker will be reported as missing with nothing done about it.'
+    );
+    return;
+  }
+  if (!before.emptyCategories.length) return;
+
+  const missing = before.emptyCategories;
+  console.log(
+    `The profile's emoji catalog has no emoji for ${missing.length} of its categories `
+    + `(${missing.join(', ')}), so an emoji from those cannot be found in the picker. `
+    + 'Dropping the catalog and reloading Teams to sync it again...'
+  );
+  // Every catalog in the profile goes, not just the one the gap was found in:
+  // which of them the client is using cannot be told from the outside, and one
+  // left behind is one the check keeps finding the same gap in, run after run.
+  //
+  // The deletion is asked for and not waited on, deliberately: the app is
+  // holding the database open, so the request reports "blocked" and stays
+  // pending until something closes that connection — which is the reload on the
+  // next line. Waiting for it to finish first would be waiting for a reload
+  // that has not happened yet.
+  await page.evaluate(
+    names => { for (const name of names) indexedDB.deleteDatabase(name); },
+    await emojiDatabaseNames(page),
+  );
+  await loadTeams(page);
+
+  // The sync runs by itself from here; all that is left is to give it a moment,
+  // since a command that walked the picker before it finished would draw the
+  // same wrong conclusion as before.
+  const deadline = Date.now() + EMOJI_CATALOG_SYNC_TIMEOUT_MS;
+  for (;;) {
+    // A catalog that cannot be read means the opposite here of what it meant
+    // above. Before the delete it meant there was nothing to repair; after it,
+    // it means the database Teams is going to recreate is not there yet — the
+    // ordinary state of the first seconds after the reload — so it keeps the
+    // loop waiting rather than ending it.
+    const catalog = await readEmojiCatalog(page);
+    if (catalog && !catalog.emptyCategories.length) {
+      console.log('The emoji catalog is complete again.');
+      return;
+    }
+    if (Date.now() >= deadline) {
+      // Carried on with rather than raised: the picker is about to be walked
+      // anyway, and it — not this — is what decides whether the emoji that was
+      // actually asked for is there.
+      //
+      // Which of the two things went wrong is worth telling apart, because the
+      // answers differ. A database still holding exactly the emoji it held
+      // before is one we asked to have deleted, still there: a
+      // deleteDatabase() stays blocked until every connection to it is closed,
+      // and the reload only closes the ones the page itself holds — a service
+      // worker's outlives it. Waiting longer would not have helped, so saying
+      // "not finished syncing" would send the reader the wrong way. One such
+      // database is enough to say so, whatever became of the others.
+      const survivor = Object.entries(catalog?.emojiCounts ?? {})
+        .find(([name, count]) => before.emojiCounts[name] === count);
+      if (survivor) {
+        console.log(
+          `The emoji catalog still holds the same ${survivor[1]} emoji it did before the `
+          + 'reload, so the deletion never went through — something outside the page, such as a '
+          + 'service worker, is still holding the database open. Carrying on, but the gap is '
+          + 'unrepaired: stopping the browser daemon (node teams-daemon.mjs --stop) and running '
+          + 'the command again closes every connection there is.'
+        );
+      } else if (catalog?.emptyCategories.length) {
+        // Which of the two this is cannot be told from here, so neither is
+        // asserted: after a reload and a full minute, "still empty" is at least
+        // as likely to mean a category with nothing to put in it as a sync that
+        // is behind, and the categories are named so the reader can judge.
+        console.log(
+          `${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s after the reload the emoji catalog still has `
+          + `no emoji for ${catalog.emptyCategories.join(', ')} — carrying on. Either the sync has `
+          + 'not got that far, in which case an emoji from those will still be reported as missing '
+          + 'from the picker, or they are empty because there is nothing to put in them: a '
+          + 'category the tenant has uploaded no emoji of is listed by the catalog and stays empty '
+          + 'for good.'
+        );
+      } else {
+        console.log(
+          `The emoji catalog could not be read ${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s after the `
+          + 'reload — carrying on, but Teams has not brought it back yet, so whether the gap was '
+          + 'repaired is unknown.'
+        );
+      }
+      return;
+    }
+    await page.waitForTimeout(EMOJI_CATALOG_POLL_MS);
+  }
+}
+
+// The profile's emoji catalogs, by database name. The check and the repair both
+// work from this rather than each recognising a catalog for itself: they have to
+// agree on which databases they are talking about, and one substring match is
+// easier to keep true to Teams than two copies of it.
+function emojiDatabaseNames(page) {
+  return page.evaluate(
+    fragment => indexedDB.databases().then(dbs => dbs.map(db => db.name).filter(n => n?.includes(fragment))),
+    EMOJI_DB_NAME_FRAGMENT,
+  );
+}
+
+// What the profile's emoji catalogs hold: the titles of the categories with no
+// emoji in them, and the number of emoji they hold altogether. Null when no
+// catalog can be read at all — none has been created yet, or Teams has moved
+// it, in which case there is nothing to conclude and nothing to repair.
+//
+// The count is carried alongside the titles because it is the only way to tell,
+// after a repair, whether the catalog on screen is the new one or the old one
+// the delete request never got to remove.
+//
+// Every catalog in the profile is read, not just one. Teams names the database
+// after the signed-in user and the profile directory outlives a re-login, so a
+// profile that has ever held a second account carries more than one of them,
+// and which one the client is using cannot be told from the name. Reporting a
+// category that is empty in any of them drives the repair from the worst copy;
+// picking one of them instead would as easily read a stale account's healthy
+// catalog and leave the live one broken, silently and for good.
+//
+// Categories are compared rather than counted because the catalog's size is
+// Teams' business and moves with their emoji set, while a category the catalog
+// itself names and then has nothing for is wrong however large the rest of it
+// is.
+//
+// `recent` is the one category known to be empty for reasons of its own, and it
+// is unlikely to be the only one — a category the tenant has uploaded no emoji
+// of is listed here and legitimately holds nothing, and reads from here exactly
+// like one a sync missed. There is no telling the two apart short of knowing
+// which categories Teams ships as built-in, so such a category costs a repair
+// that cannot help it, on every run, for as long as it stays empty. What is
+// avoided is claiming otherwise: the message the repair's wait ends with names
+// both readings rather than asserting the sync is behind.
+//
+// That makes a category with nothing in it at all the only gap this recognises,
+// and a lower bound on the damage: nothing here knows how many emoji a category
+// is supposed to hold, since the metadata is read for the names of the
+// categories and nothing else. A sync that stopped in the middle of a category
+// rather than between two therefore leaves it looking as finished as any other,
+// and an emoji from the part it never reached is still reported as missing from
+// the picker with nothing said beforehand. Closing that would take a
+// per-category expected count to compare against, if the metadata record turns
+// out to carry one.
+async function readEmojiCatalog(page) {
+  const names = await emojiDatabaseNames(page).catch(() => []);
+  if (!names.length) return null;
+
+  return page.evaluate(async ({ names, recentId, metadataStore, emojiStore }) => {
+    const readAll = (store) => new Promise((resolve, reject) => {
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    // Which categories the emoji store holds a record for, and how many records
+    // that is. Walked with a cursor rather than read with getAll(), which would
+    // materialise every emoji whole — keywords, shortcodes and all — for the
+    // one field on it that is looked at: this runs at the start of every
+    // reaction command, and again every couple of seconds throughout a repair,
+    // when the client is busy writing that same store back.
+    const scanEmoji = (store) => new Promise((resolve, reject) => {
+      const filled = new Set();
+      let count = 0;
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return resolve({ filled, count });
+        filled.add(cursor.value.categoryId);
+        count += 1;
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error);
+    });
+
+    const readCatalog = async (name) => {
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open(name);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+        // Only ever reached if the database went away between being listed and
+        // being opened, in which case this call has just created an empty one.
+        // Nothing can be said about a catalog we made up ourselves.
+        request.onupgradeneeded = () => { request.transaction.abort(); resolve(null); };
+      }).catch(() => null);
+      if (!db) return null;
+
+      try {
+        const stores = [metadataStore, emojiStore];
+        if (!stores.every(store => [...db.objectStoreNames].includes(store))) return null;
+
+        // Both reads are asked for before either is awaited: an IndexedDB
+        // transaction commits as soon as control returns to the event loop with
+        // nothing outstanding on it, so a second request issued after awaiting
+        // the first would land on a transaction that has already closed.
+        const transaction = db.transaction(stores, 'readonly');
+        const [metadata, emoji] = stores.map(store => transaction.objectStore(store));
+        const [metadataRecords, { filled, count }] = await Promise.all([
+          readAll(metadata), scanEmoji(emoji),
+        ]);
+
+        // The record that carries the categories is looked for rather than
+        // taken to be the first one. getAll() hands records back in key order,
+        // so "the first" is the right record only for as long as the store
+        // holds nothing besides it, which nothing here guarantees: a
+        // schema-version row or a second locale's list appearing alongside it
+        // would otherwise read the wrong record, find no categories on it and
+        // quietly switch the whole check off.
+        const categories = metadataRecords.find(record => Array.isArray(record?.categories))?.categories;
+        if (!categories?.length) return null;
+
+        return {
+          empty: categories.filter(c => c.id !== recentId && !filled.has(c.id)).map(c => c.title ?? c.id),
+          count,
+        };
+      } finally {
+        db.close();
+      }
+    };
+
+    // A catalog that could not be read drops out here rather than counting as
+    // one with nothing missing, so "no catalog at all" stays distinguishable
+    // from "every catalog is fine".
+    const catalogs = (await Promise.all(names.map(async (name) => {
+      const catalog = await readCatalog(name);
+      return catalog && { name, ...catalog };
+    }))).filter(catalog => catalog !== null);
+    if (!catalogs.length) return null;
+
+    return {
+      emptyCategories: [...new Set(catalogs.flatMap(catalog => catalog.empty))],
+      // Kept per database rather than summed, so that "this one was not
+      // deleted" stays askable of each of them. A total says only that
+      // something changed somewhere, which in a profile holding several
+      // catalogs is exactly what a blocked deletion looks like: the databases
+      // no client has open are deleted cleanly and take the total down with
+      // them, while the one that matters sits there untouched.
+      emojiCounts: Object.fromEntries(catalogs.map(catalog => [catalog.name, catalog.count])),
+    };
+  }, {
+    names,
+    recentId: RECENT_EMOJI_CATEGORY_ID,
+    metadataStore: EMOJI_METADATA_STORE,
+    emojiStore: EMOJI_STORE,
+  }).catch(() => null);
 }
 
 // Clicks one of the reaction picker's emoji on a message, and leaves the picker

@@ -189,6 +189,15 @@ Pass the emoji character itself, not its name. Where several of the picker's
 emoji share one character (Teams has both an animated and a plain 👏, for
 example), the first one it offers is used.
 
+The emoji the picker offers come from a catalog Teams keeps in the browser
+profile and fills in once. A sync that was cut short — the browser closed part
+way through it — leaves a catalog the client treats as finished, whose missing
+categories render as empty headings in the picker; every emoji in them then
+looks as though Teams does not have it. Both reaction commands check the catalog
+before they start, and an incomplete one is dropped and Teams reloaded so that
+it is fetched again. That costs one page load plus the wait for the sync (up to a
+minute, on the run that finds it), and says so as it happens.
+
 The chat history is scrolled back until the messages are found, so reacting to an
 old message takes as long as reading that far back. Reacting is a toggle in
 Teams, so a reaction you already left is never clicked again — that would take
@@ -280,7 +289,8 @@ daemon, or from a browser of the command's own), the preamble both login scripts
 run before they can open a browser, finding and opening a chat by name, scrolling
 the message pane back through the history, and everything the two reaction
 commands do alike (their arguments, the walk to each message of a list, the hover
-toolbar and the emoji picker) — so each script only contains its own logic.
+toolbar, the emoji catalog check and the emoji picker) — so each script only
+contains its own logic.
 `daemon.mjs` is the client side of the daemon: finding it, starting it, and
 serialising commands against it.
 
