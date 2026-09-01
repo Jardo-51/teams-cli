@@ -964,6 +964,16 @@ export async function ensureEmojiCatalog(page) {
 // Teams' business and moves with their emoji set, while a category the catalog
 // itself names and then has nothing for is wrong however large the rest of it
 // is.
+//
+// That makes a category with nothing in it at all the only gap this recognises,
+// and a lower bound on the damage: nothing here knows how many emoji a category
+// is supposed to hold, since the metadata is read for the names of the
+// categories and nothing else. A sync that stopped in the middle of a category
+// rather than between two therefore leaves it looking as finished as any other,
+// and an emoji from the part it never reached is still reported as missing from
+// the picker with nothing said beforehand. Closing that would take a
+// per-category expected count to compare against, if the metadata record turns
+// out to carry one.
 function readEmojiCatalog(page) {
   return page.evaluate(async (recentId) => {
     const readAll = (store) => new Promise((resolve, reject) => {
