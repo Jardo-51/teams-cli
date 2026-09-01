@@ -877,7 +877,20 @@ export function emojiImage(page, emoji) {
 // list again.
 export async function ensureEmojiCatalog(page) {
   const before = await readEmojiCatalog(page);
-  if (!before?.emptyCategories.length) return;
+  // Said out loud rather than passed over in silence: a profile whose catalog
+  // cannot be read is one where this check is off for good, and the reaction
+  // commands' "not in the reaction picker" error names that case as the one
+  // thing it can still be. A reader who was told nothing has no way to know
+  // they are in it, and will as readily conclude that the check ran and passed.
+  if (before === null) {
+    console.log(
+      "The profile's emoji catalog could not be read, so whether it is complete cannot be told — "
+      + 'carrying on. Teams has most likely moved it, in which case an emoji missing from the '
+      + 'picker will be reported as missing with nothing done about it.'
+    );
+    return;
+  }
+  if (!before.emptyCategories.length) return;
 
   const missing = before.emptyCategories;
   console.log(
