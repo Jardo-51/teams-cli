@@ -39,6 +39,14 @@ const REMOVAL_SETTLE_MS = 1000;
 // its "+N" has really gone from it.
 const OVERFLOW_POLL_MS = 250;
 
+// How long the "+N" is given to turn up before the message is taken to be
+// hiding nothing. Shorter than the wait our own pill gets above, because what
+// it covers is smaller: the overflow button is part of the same reaction row as
+// the pills, and settleReactions has already waited for that row's first pill,
+// so this is the button rendering a tick behind the pills beside it rather than
+// the row arriving at all.
+const OVERFLOW_SETTLE_MS = 2000;
+
 // How many reactions of ours one message may have taken off it in a single run,
 // applied to each of the two places they can be. It is a bound rather than a
 // limit anyone should reach: the picker holds three buttons for the most
@@ -141,7 +149,7 @@ async function removeReaction(page, mid, resolvedName, findMessage) {
 // one back there: what a later removal promotes is by then someone else's.
 async function unreactAll(page, message, mid) {
   const ownPills = ownReactionPills(page, message, emoji);
-  let removed = await reactionOverflowButton(message).count() > 0
+  let removed = await hasOverflow(message)
     ? await unreactOverflowed(page, message, mid)
     : 0;
 
@@ -154,6 +162,23 @@ async function unreactAll(page, message, mid) {
     removed++;
   }
   return removed;
+}
+
+// Whether the message is hiding reactions behind a "+N".
+//
+// Absence gets the second look the pills get below, and for the same reason.
+// settleReactions waits for the message's *first* pill, so a reaction row that
+// renders its pills before the overflow button beside them satisfies it while
+// the "+N" is still to come — and this read is what decides whether the
+// overflow is opened at all. Believed on the first look, an overflow that was
+// merely late is an overflow never opened, and a reaction of ours sitting
+// behind it is reported as "nothing to remove": the false success issue #23 was
+// filed to kill, reached from the other side.
+async function hasOverflow(message) {
+  const overflow = reactionOverflowButton(message);
+  if (await overflow.count() > 0) return true;
+  await overflow.first().waitFor({ state: 'visible', timeout: OVERFLOW_SETTLE_MS }).catch(() => {});
+  return await overflow.count() > 0;
 }
 
 // Whether the message renders a pill for a reaction of ours to take back.
