@@ -778,6 +778,13 @@ const PICKER_OPEN_STEP_TIMEOUT_MS = 5000;
 // up on. Opening it changes nothing on the message — only the click on an emoji
 // does — so an attempt that stalled part of the way through costs nothing but
 // the second or two it takes to make again.
+//
+// Kept low because what it multiplies is not only the three steps above: each
+// attempt raises the toolbar first, and that has waits of its own. So the worst
+// a wholly unresponsive message can now cost is minutes rather than the 15
+// seconds it used to, and every one of those attempts is spent on a message
+// that has already failed twice. Three is the most that is worth spending
+// before the run says so and moves on to the next id.
 const PICKER_OPEN_ATTEMPTS = 3;
 // How long each of the things the retry waits to see the back of is given to go
 // before the next attempt is made regardless: the picker left standing by a
