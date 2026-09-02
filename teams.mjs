@@ -784,6 +784,15 @@ const REACTION_OVERFLOW_TIMEOUT_MS = 15000;
 // "+N" reaction overflow — so which one is on screen is a matter of what was
 // done to the message, not of what it is called.
 const REACTION_LIST_SELECTOR = '[data-tid="diverse-reaction-user-list"]';
+// Where the pointer is parked to get it off whatever it is hovering. Hovering a
+// reaction pill raises a flyout, and the only way to be sure the pointer is on
+// no pill is to put it somewhere no message can be — so this is the top-left
+// corner of the viewport, which the app rail holds whatever the window is
+// sized to, rather than a point worked out from the message pane. What the rail
+// may raise there does not matter: a tooltip is not a
+// [data-tid="diverse-reaction-user-list"], and that element is the whole of
+// what the checks downstream of a park look for.
+const POINTER_PARK = { x: 5, y: 5 };
 // How long the click that closes the "+N" overflow again is given to land.
 // Explicit because there is no default timeout set anywhere in this repo, and
 // this click is made on the way out of a popup that may already have gone: a
@@ -1607,7 +1616,7 @@ export async function openReactionOverflow(page, message, mid) {
   // telling which rows belong to which, so the pointer is parked first and what
   // is still open afterwards is refused rather than guessed at.
   const menu = page.locator(`${REACTION_LIST_SELECTOR}:visible`);
-  await page.mouse.move(5, 5);
+  await parkPointer(page);
   await menu.first().waitFor({ state: 'hidden', timeout: FLYOUT_CLOSE_MS }).catch(() => {});
   if (await menu.count() > 0) {
     throw new Error(
@@ -1663,7 +1672,13 @@ export async function closeReactionOverflow(page, message) {
     await overflow.click({ timeout: OVERFLOW_CLOSE_CLICK_MS });
     return;
   }
-  await page.mouse.move(5, 5);
+  await parkPointer(page);
+}
+
+// Moves the pointer off whatever it is hovering, so that a reaction pill under
+// it stops raising its flyout.
+function parkPointer(page) {
+  return page.mouse.move(POINTER_PARK.x, POINTER_PARK.y);
 }
 
 // Finds a button in the open picker, scrolling the list until one turns up.
