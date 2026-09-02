@@ -733,7 +733,7 @@ export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0, on
     onPaneMoved?.();
     console.log(
       `Scrolling back for message ${mid} — step ${step + 1}/${MAX_SCROLL_STEPS}, `
-      + `oldest message in view ${pane.oldestMid ?? 'unknown'}.`
+      + `oldest message in view before this step ${pane.oldestMid ?? 'unknown'}.`
     );
     await page.waitForTimeout(1500);
   }
