@@ -65,12 +65,21 @@ export const MAX_SCROLL_STEPS = 300;
 // exactly like a chat with no more history, and mistaking one for the other
 // cuts the search short silently.
 const OLDER_HISTORY_GRACE_MS = 20_000;
-// How much older than the message being looked for a message rendered in the
-// pane has to be before the walk back concludes it has gone past it. Ids are the
-// sending client's clock rather than the server's, so two messages posted around
-// the same moment can be ordered in the pane the other way round from their ids;
-// the margin keeps that skew from ending a walk one step short of its target.
+// How much older than the message being looked for the topmost message in the
+// rendered window has to be before that window counts as reaching past it. Ids
+// are the sending client's clock rather than the server's, so a message can
+// carry an id from either side of where the pane orders it; the margin keeps
+// that skew from reading an ordinary window as one the target is already behind.
 const MESSAGE_ID_SKEW_MS = 5 * 60_000;
+// How many consecutive steps have to reach past the target before the walk acts
+// on it. The comparison is against whichever message is topmost at the time, not
+// against the target's neighbours, so a single message anywhere in the history
+// whose sending client's clock was slow by more than the margin above would end
+// every walk that renders it at the top — reporting a message sitting right
+// there as missing. Scrolling on puts a different message at the top, so one
+// such outlier cannot hold the verdict twice, and asking for it twice costs a
+// single extra step where the walk really has gone past its target.
+const PAST_TARGET_STEPS = 2;
 
 // Gives a command a Teams page to work on, plus the close() it must call when
 // it is done.
@@ -655,6 +664,7 @@ function isPastTarget(renderedMid, mid) {
 export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0, onPaneMoved } = {}) {
   const message = messageLocator(page, mid);
   let historyWaits = 0;
+  let pastTargetSteps = 0;
   for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
     if (await message.count() > 0) {
       onPaneMoved?.();
@@ -666,13 +676,16 @@ export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0, on
     // so a target missing from a window that already reaches past its moment in
     // time is either ahead of the pane or not in this chat at all. Either way
     // paging in still older history cannot turn it up, and that is what used to
-    // make one bad id cost minutes of silent scrolling.
+    // make one bad id cost minutes of silent scrolling. A run of windows has to
+    // say so, not one of them — see PAST_TARGET_STEPS.
     const pane = await readPaneState(page);
     if (!pane) throw viewportGoneError();
-    if (isPastTarget(pane.oldestMid, mid)) {
+    pastTargetSteps = isPastTarget(pane.oldestMid, mid) ? pastTargetSteps + 1 : 0;
+    if (pastTargetSteps >= PAST_TARGET_STEPS) {
       console.log(
-        `The pane is showing message ${pane.oldestMid}, which is older than ${mid} — so ${mid} `
-        + 'is not further back, and this walk stops here rather than paging in more history.'
+        `The pane has been showing messages older than ${mid} for ${PAST_TARGET_STEPS} steps `
+        + `running, the oldest in view now being ${pane.oldestMid} — so ${mid} is not further `
+        + 'back, and this walk stops here rather than paging in more history.'
       );
       return false;
     }
