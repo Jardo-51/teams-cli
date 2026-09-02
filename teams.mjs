@@ -18,9 +18,17 @@ export const PROFILE_DIR = process.env.TEAMS_PROFILE || '.profile';
 export const AUTH_PATH = process.env.TEAMS_AUTH || '.auth/user.json';
 
 const TEAMS_URL = 'https://teams.microsoft.com/v2/?ctx=chat';
-// What a Teams tab's URL begins with, for picking it out of the shared browser's
-// pages. The path is rewritten by the SPA as it is navigated; the origin is not.
-const TEAMS_ORIGIN = 'https://teams.microsoft.com/';
+// What a Teams tab's URL can begin with, for picking it out of the shared
+// browser's pages. The path is rewritten by the SPA as it is navigated; the
+// origin is not — but it is not the origin the tab was entered through either.
+// TEAMS_URL redirects to teams.cloud.microsoft, and the client has moved
+// between hosts before, so this lists the origins Teams lands on rather than
+// the one it is asked for. An origin missing from here reads as "no Teams tab
+// open" and costs a full reload of a page that was already signed in.
+const TEAMS_ORIGINS = [
+  'https://teams.cloud.microsoft/',
+  'https://teams.microsoft.com/',
+];
 
 // How long the daemon's page gets to show its chat list before it is treated as
 // stale and reloaded. A healthy tab has it rendered already, so this only has to
@@ -221,7 +229,7 @@ async function refreshPage(context) {
   // "continue in the desktop app" window or a link a previous run followed can
   // sit in front of it — and the reload below would then navigate that popup
   // and leave the signed-in tab open beside it.
-  const teams = open.find(p => p.url().startsWith(TEAMS_ORIGIN));
+  const teams = open.find(p => TEAMS_ORIGINS.some(origin => p.url().startsWith(origin)));
   // Anything else open is reused rather than replaced with a fresh tab, so that
   // a signed-in tab caught mid-redirect through the login origin is navigated
   // back to Teams instead of being abandoned for a second one.
