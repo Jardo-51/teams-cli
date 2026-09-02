@@ -1690,8 +1690,13 @@ async function openPickerFromToolbar(actions, picker) {
     });
 
   // The picker's frame appears before its emoji do, so wait for the list itself
-  // — searching it while it is still empty would find nothing.
-  await picker.locator('[data-tid^="emoticon-button-"]').first()
+  // — searching it while it is still empty would find nothing. Asked through
+  // pickerButtons, which is where this file keeps what counts as an emoji that
+  // can be clicked at all: the picker holds hidden copies of its grids in the
+  // DOM, and a first() taken over the bare selector could settle on one of those
+  // and sit out the step reporting an empty list about a picker that rendered
+  // perfectly — which no retry could clear, the DOM order being what it is.
+  await pickerButtons(picker).first()
     .waitFor({ state: 'visible', timeout: PICKER_OPEN_STEP_TIMEOUT_MS })
     .catch((err) => {
       throw new Error('the picker opened but its emoji list stayed empty', { cause: err });
