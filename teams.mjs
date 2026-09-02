@@ -1627,7 +1627,11 @@ async function openReactionPicker(page, message, mid) {
           .catch(() => {});
       }
 
-      if (attempt === PICKER_OPEN_ATTEMPTS) {
+      // Compared with >= rather than ===: this is the only thing standing
+      // between the loop and going round for ever, so it holds for whatever
+      // PICKER_OPEN_ATTEMPTS is set to, including a value someone drops below
+      // one while working out where a stall comes from.
+      if (attempt >= PICKER_OPEN_ATTEMPTS) {
         throw new Error(
           `The reaction picker of message ${mid} did not open in ${PICKER_OPEN_ATTEMPTS} attempts. `
           + `The last of them got as far as this: ${err.message}.`,
