@@ -277,7 +277,7 @@ async function confirmPillRemoved(page, message, mid, ownPills, before) {
 async function unreactOverflowed(page, message, mid) {
   const menu = await openReactionOverflow(page, message, mid);
 
-  return withOpenPopup(menu, () => closeReactionOverflow(message), async () => {
+  return withOpenPopup(menu, () => closeReactionOverflow(page, message), async () => {
     const rows = ourOverflowRows(page, menu);
     let removed = 0;
 

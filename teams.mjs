@@ -784,6 +784,12 @@ const REACTION_OVERFLOW_TIMEOUT_MS = 15000;
 // "+N" reaction overflow — so which one is on screen is a matter of what was
 // done to the message, not of what it is called.
 const REACTION_LIST_SELECTOR = '[data-tid="diverse-reaction-user-list"]';
+// How long the click that closes the "+N" overflow again is given to land.
+// Explicit because there is no default timeout set anywhere in this repo, and
+// this click is made on the way out of a popup that may already have gone: a
+// miss should cost a moment and let the failure that led there stand, not sit
+// out Playwright's 30s once per message.
+const OVERFLOW_CLOSE_CLICK_MS = 2000;
 // How long any reaction flyout left over from an earlier hover is given to go
 // once the pointer has been moved off it. Best-effort: what it guards against
 // is a second [data-tid="diverse-reaction-user-list"] standing next to the one
@@ -1619,7 +1625,7 @@ export async function openReactionOverflow(page, message, mid) {
     // holds the focus, and on this path no row ever rendered, so there is
     // nothing inside it that could. A menu left up covers the message pane, and
     // the next id in the list could then not even be hovered.
-    await closeReactionOverflow(message).catch(() => {});
+    await closeReactionOverflow(page, message).catch(() => {});
     throw new Error(
       `The "+N" reaction overflow of message ${mid} did not open its list (no visible `
       + `[data-tid="diverse-reaction-user-list-item"]). The Teams DOM has probably changed.`,
@@ -1633,8 +1639,23 @@ export async function openReactionOverflow(page, message, mid) {
 // pressing Escape at it leaves it standing, unless one of its own rows happens
 // to hold the focus — so what closes it is another click on the "+N" that
 // opened it, which is a toggle.
-export function closeReactionOverflow(message) {
-  return reactionOverflowButton(message).first().click();
+//
+// Which means the toggle has to still be on the message. Removing the last
+// reaction it was hiding takes the "+N" away and its menu with it, and what is
+// left visible under the pointer parked on the button can then be a pill's
+// hover flyout — the same element as the menu, so a caller asking "is the popup
+// still open?" of that selector is told yes. Clicking a button that is no
+// longer there would wait out Playwright's default timeout and leave the flyout
+// it was aimed at standing anyway, so the button's absence is read as "there is
+// no menu of ours left to close" and the pointer is moved off the flyout
+// instead, which is what a hover flyout goes on.
+export async function closeReactionOverflow(page, message) {
+  const overflow = reactionOverflowButton(message).first();
+  if (await overflow.count() > 0) {
+    await overflow.click({ timeout: OVERFLOW_CLOSE_CLICK_MS });
+    return;
+  }
+  await page.mouse.move(5, 5);
 }
 
 // Finds a button in the open picker, scrolling the list until one turns up.
