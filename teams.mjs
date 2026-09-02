@@ -1635,7 +1635,12 @@ async function openPickerFromToolbar(actions, picker) {
       throw new Error('the toolbar came up with no "More reactions" entry to click', { cause: err });
     });
 
-  await picker.waitFor({ state: 'visible', timeout: PICKER_OPEN_STEP_TIMEOUT_MS })
+  // Narrowed with .first() because waitFor on a bare locator is strict: a hidden
+  // leftover root from the message before would make this throw a strict-mode
+  // violation the moment it was called, and the catch below would report that as
+  // a picker that never followed the click — three times over, since nothing a
+  // retry does removes the second root.
+  await picker.first().waitFor({ state: 'visible', timeout: PICKER_OPEN_STEP_TIMEOUT_MS })
     .catch((err) => {
       throw new Error('"More reactions" was clicked and no picker followed', { cause: err });
     });
