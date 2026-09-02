@@ -905,11 +905,11 @@ function orderNewestFirst(messageIds) {
 // bounded by how old the target is rather than by how long the conversation is.
 export function createMessageFinder(page, { maxHistoryWaits = MAX_HISTORY_WAITS } = {}) {
   // Where openChat leaves the pane, and the only thing the walks below move
-  // away from. A walk that stops before it scrolls — which is what an id the
-  // pane is already past costs — does not move it, and taking such a walk for a
-  // move would make the next id that is genuinely missing walk the history
-  // twice: once from where the pane still is, then again from a newest end it
-  // never left.
+  // away from. Not every walk moves it: one that finds nothing left to scroll
+  // and no older history on its way gives up where it started. Taking such a
+  // walk for a move would make the next id that is genuinely missing walk the
+  // history twice — once from where the pane still is, then again from a newest
+  // end it never left.
   let paneAtNewest = true;
   const onPaneMoved = () => { paneAtNewest = false; };
 
