@@ -779,6 +779,12 @@ const PICKER_OPEN_STEP_TIMEOUT_MS = 5000;
 // does — so an attempt that stalled part of the way through costs nothing but
 // the second or two it takes to make again.
 const PICKER_OPEN_ATTEMPTS = 3;
+// How long the picker left standing by a stalled attempt is given to go once an
+// Escape has been sent at it, before the next attempt is made regardless.
+// Best-effort: the wait is there so that attempt hovers a message the popup no
+// longer covers, and a picker that outstays it is caught by that attempt's own
+// failure rather than here.
+const PICKER_RETRY_CLOSE_MS = 3000;
 // How long each scroll step of the picker is given to render the emoji it moved
 // into view, before that window is searched.
 const PICKER_SETTLE_MS = 250;
@@ -1588,6 +1594,14 @@ async function openReactionPicker(page, message, mid) {
       // keystroke into the chat.
       if (await picker.first().isVisible().catch(() => false)) {
         await page.keyboard.press('Escape').catch(() => {});
+        // Waited on rather than sent and forgotten. The next thing the loop does
+        // is hover the message again, and a picker still up covers the pane so
+        // that hover cannot land — and since it is made outside the try, a modal
+        // that intercepted it would cost not a slower retry but the retry
+        // itself, reported as a toolbar that never opened on hover rather than
+        // as the picker trouble this is all here to name.
+        await picker.first().waitFor({ state: 'hidden', timeout: PICKER_RETRY_CLOSE_MS })
+          .catch(() => {});
       }
 
       if (attempt === PICKER_OPEN_ATTEMPTS) {
