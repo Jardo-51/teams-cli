@@ -18,7 +18,7 @@ export const PROFILE_DIR = process.env.TEAMS_PROFILE || '.profile';
 export const AUTH_PATH = process.env.TEAMS_AUTH || '.auth/user.json';
 
 const TEAMS_URL = 'https://teams.microsoft.com/v2/?ctx=chat';
-// What a Teams tab's URL can begin with, for picking it out of the shared
+// The origins a Teams tab's URL can have, for picking it out of the shared
 // browser's pages. The path is rewritten by the SPA as it is navigated; the
 // origin is not — but it is not the origin the tab was entered through either.
 // TEAMS_URL redirects to teams.cloud.microsoft, and the client has moved
@@ -26,10 +26,10 @@ const TEAMS_URL = 'https://teams.microsoft.com/v2/?ctx=chat';
 // the one it is asked for. A hint rather than the last word, for the same
 // reason: a tab on a host missing from here is still recognised, by asking the
 // page itself — see refreshPage().
-const TEAMS_ORIGINS = [
-  'https://teams.cloud.microsoft/',
-  'https://teams.microsoft.com/',
-];
+const TEAMS_ORIGINS = new Set([
+  'https://teams.cloud.microsoft',
+  'https://teams.microsoft.com',
+]);
 
 // How long the daemon's page gets to show its chat list before it is treated as
 // stale and reloaded. A healthy tab has it rendered already, so this only has to
@@ -236,7 +236,11 @@ async function refreshPage(context) {
   // "continue in the desktop app" window or a link a previous run followed can
   // sit in front of it — and the reload below would then navigate that popup
   // and leave the signed-in tab open beside it.
-  let teams = open.find(p => TEAMS_ORIGINS.some(origin => p.url().startsWith(origin)));
+  // Compared as parsed origins rather than as URL prefixes, so that neither a
+  // lookalike host (https://teams.microsoft.com.example/) matches nor a URL with
+  // no path fails to. URL.parse() returns null rather than throwing, so an
+  // about:blank page is simply not a match.
+  let teams = open.find(p => TEAMS_ORIGINS.has(URL.parse(p.url())?.origin));
   // The origin list is a hint, not the only thing that may recognise a Teams
   // tab. It has gone stale before, and a signed-in tab on a host missing from it
   // would not merely be reloaded: with a popup open in front, it is the popup
