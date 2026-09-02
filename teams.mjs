@@ -779,11 +779,13 @@ const PICKER_OPEN_STEP_TIMEOUT_MS = 5000;
 // does — so an attempt that stalled part of the way through costs nothing but
 // the second or two it takes to make again.
 const PICKER_OPEN_ATTEMPTS = 3;
-// How long the picker left standing by a stalled attempt is given to go once an
-// Escape has been sent at it, before the next attempt is made regardless.
-// Best-effort: the wait is there so that attempt hovers a message the popup no
-// longer covers, and a picker that outstays it is caught by that attempt's own
-// failure rather than here.
+// How long each of the things the retry waits to see the back of is given to go
+// before the next attempt is made regardless: the picker left standing by a
+// stalled attempt, once an Escape has been sent at it, and the toolbar, once the
+// pointer has been parked off the message. Best-effort: the waits are there so
+// that attempt hovers a message no popup covers and no toolbar is already up
+// over, and anything outstaying them is caught by that attempt's own failure
+// rather than here.
 const PICKER_RETRY_CLOSE_MS = 3000;
 // How long each scroll step of the picker is given to render the emoji it moved
 // into view, before that window is searched.
@@ -1577,7 +1579,9 @@ export async function withOpenPopup(popup, dismiss, body) {
 //
 // Between attempts the pointer is parked off the message so the toolbar drops
 // and is raised again from scratch, rather than a second hover arriving at the
-// point the pointer already sits on and changing nothing.
+// point the pointer already sits on and changing nothing — and the drop is
+// waited for, since parking only dispatches the move and says nothing about
+// what the page then does with it.
 //
 // The toolbar is raised inside the loop but its failure is not retried: it
 // throws straight out of here, because a toolbar that never opens on hover has
@@ -1636,6 +1640,13 @@ async function openReactionPicker(page, message, mid) {
         + `Trying again (attempt ${attempt + 1} of ${PICKER_OPEN_ATTEMPTS})...`
       );
       await parkPointer(page);
+      // Waited on the way openReactionOverflow waits after its own park: a
+      // toolbar still up when the next attempt hovers is the no-op the park is
+      // here to avoid, and the park on its own gives it no moment to go.
+      // Shrugged off if it stays — an attempt made into a toolbar that would not
+      // drop is still worth more than none, and it reports its own trouble.
+      await actions.first().waitFor({ state: 'hidden', timeout: PICKER_RETRY_CLOSE_MS })
+        .catch(() => {});
     }
   }
 }
