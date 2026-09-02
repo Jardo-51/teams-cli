@@ -65,6 +65,21 @@ export const MAX_SCROLL_STEPS = 300;
 // exactly like a chat with no more history, and mistaking one for the other
 // cuts the search short silently.
 const OLDER_HISTORY_GRACE_MS = 20_000;
+// How much older than the message being looked for the topmost message in the
+// rendered window has to be before that window counts as reaching past it. Ids
+// are the sending client's clock rather than the server's, so a message can
+// carry an id from either side of where the pane orders it; the margin keeps
+// that skew from reading an ordinary window as one the target is already behind.
+const MESSAGE_ID_SKEW_MS = 5 * 60_000;
+// How many consecutive steps have to reach past the target before the walk acts
+// on it. The comparison is against whichever message is topmost at the time, not
+// against the target's neighbours, so a single message anywhere in the history
+// whose sending client's clock was slow by more than the margin above would end
+// every walk that renders it at the top — reporting a message sitting right
+// there as missing. Scrolling on puts a different message at the top, so one
+// such outlier cannot hold the verdict twice, and asking for it twice costs a
+// single extra step where the walk really has gone past its target.
+const PAST_TARGET_STEPS = 2;
 
 // Gives a command a Teams page to work on, plus the close() it must call when
 // it is done.
@@ -561,11 +576,17 @@ export function scrollUp(page) {
 // The pane's scroll extent and the id of the topmost rendered message — the two
 // things that move when older history is added to the list. Null when the
 // viewport element could not be found.
+//
+// The oldest message is looked up inside the viewport rather than in the
+// document at large: a chat-pane message can be rendered outside the scrolling
+// list — a quoted message, or the previous chat's pane, which stays mounted for
+// a moment after a switch — and one of those earlier in the document would hand
+// back an id belonging to nothing this call measures.
 function readPaneState(page) {
   return page.evaluate(() => {
     const viewport = document.querySelector('[data-tid="message-pane-list-viewport"]');
     if (!viewport) return null;
-    const oldest = document.querySelector('[data-tid="chat-pane-message"]');
+    const oldest = viewport.querySelector('[data-tid="chat-pane-message"]');
     return {
       scrollHeight: viewport.scrollHeight,
       oldestMid: oldest?.getAttribute('data-mid') ?? null,
@@ -576,8 +597,12 @@ function readPaneState(page) {
 // Waits for an older-history fetch to land while the pane sits at the top of
 // the loaded range. Returns true if more history arrived within the grace
 // period — scrollTop cannot show this, since it is pinned at 0 either way.
-export async function waitForOlderHistory(page) {
-  const before = await readPaneState(page);
+//
+// Pass paneState when the pane has just been read: what the wait needs is the
+// state it is watching for a change to, and a caller that has reached the top of
+// the loaded history has read it moments ago.
+export async function waitForOlderHistory(page, paneState = null) {
+  const before = paneState ?? await readPaneState(page);
   if (!before) throw viewportGoneError();
 
   console.log('At the top of the loaded history — waiting for older messages...');
@@ -612,6 +637,16 @@ export function paneNotScrollableError({ clientHeight, overflowY }) {
   ), { systemic: true });
 }
 
+// Whether a message rendered in the pane sits further back in time than the one
+// being looked for — the signal that the walk has gone past where its target
+// would be. Ids are epoch milliseconds, so comparing them numerically compares
+// the moments they were sent; an id that is not a plain number carries no such
+// order, and nothing is concluded from it.
+function isPastTarget(renderedMid, mid) {
+  if (!/^\d+$/.test(renderedMid ?? '') || !/^\d+$/.test(mid)) return false;
+  return Number(renderedMid) < Number(mid) - MESSAGE_ID_SKEW_MS;
+}
+
 // Brings a message into the rendered window, scrolling back through the history
 // until it appears. Callers start at the newest end and work backwards, so this
 // only ever scrolls up. Returns false if the message could not be reached.
@@ -621,14 +656,44 @@ export function paneNotScrollableError({ clientHeight, overflowY }) {
 // already seen knows the message is above it, not older, so it wants none of
 // those waits — hence the default of zero, which makes "not in the loaded
 // history" an immediate false rather than a fetch of the whole conversation.
-export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0 } = {}) {
+//
+// onPaneMoved is called the first time the walk disturbs where the pane sits.
+// Not every walk does: one that gives up before it scrolls leaves the pane
+// exactly as it found it, and a caller that remembers where the pane is would
+// otherwise have to assume the worst and re-scroll a pane that never moved.
+//
+// Every step says what it is doing. A walk of a few hundred steps at a second
+// and a half each runs for minutes, and one that goes quiet while it does is
+// indistinguishable from a hang.
+export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0, onPaneMoved } = {}) {
   const message = messageLocator(page, mid);
   let historyWaits = 0;
+  let pastTargetSteps = 0;
   for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
     if (await message.count() > 0) {
+      onPaneMoved?.();
       await message.scrollIntoViewIfNeeded().catch(() => {});
       return true;
     }
+    // Once the pane renders a message older than the target, the target is not
+    // behind it: the rendered window is a contiguous piece of the conversation,
+    // so a target missing from a window that already reaches past its moment in
+    // time is either ahead of the pane or not in this chat at all. Either way
+    // paging in still older history cannot turn it up, and that is what used to
+    // make one bad id cost minutes of silent scrolling. A run of windows has to
+    // say so, not one of them — see PAST_TARGET_STEPS.
+    const pane = await readPaneState(page);
+    if (!pane) throw viewportGoneError();
+    pastTargetSteps = isPastTarget(pane.oldestMid, mid) ? pastTargetSteps + 1 : 0;
+    if (pastTargetSteps >= PAST_TARGET_STEPS) {
+      console.log(
+        `The pane has been showing messages older than ${mid} for ${PAST_TARGET_STEPS} steps `
+        + `running, the oldest in view now being ${pane.oldestMid} — so ${mid} is not further `
+        + 'back, and this walk stops here rather than paging in more history.'
+      );
+      return false;
+    }
+
     const scrolled = await scrollUp(page);
     // A vanished viewport is a broken selector, not a missing message: returning
     // false here would have the caller report a DOM change as a bad message id.
@@ -638,12 +703,41 @@ export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0 } =
     // older history may still be on its way, so give the fetch a chance before
     // concluding the message is not there.
     if (scrolled.after === scrolled.before) {
-      if (historyWaits++ >= maxHistoryWaits) return false;
-      if (!await waitForOlderHistory(page)) return false;
+      if (historyWaits++ >= maxHistoryWaits) {
+        // A caller that allowed no waits at all asked about the loaded history
+        // and nothing more, so it gets its answer without a word about history
+        // it never wanted fetched.
+        if (maxHistoryWaits > 0) {
+          console.log(
+            `Paged in older history ${maxHistoryWaits} times without reaching message ${mid} — `
+            + 'that is as far back as one walk goes.'
+          );
+        }
+        return false;
+      }
+      if (!await waitForOlderHistory(page, pane)) {
+        // Which of the two readings this is — no more history, or a fetch too
+        // slow to land inside the grace period — is exactly what cannot be told
+        // apart here, so the line says what was seen and leaves it at that.
+        console.log(
+          `No older messages arrived within ${OLDER_HISTORY_GRACE_MS / 1000}s at the top of the `
+          + `loaded history, so the walk for message ${mid} stops here.`
+        );
+        return false;
+      }
+      // History landing above the pane leaves it showing the same messages, but
+      // no longer at the end of the list it was pinned to.
+      onPaneMoved?.();
       continue;
     }
+    onPaneMoved?.();
+    console.log(
+      `Scrolling back for message ${mid} — step ${step + 1}/${MAX_SCROLL_STEPS}, `
+      + `oldest message in view before this step ${pane.oldestMid ?? 'unknown'}.`
+    );
     await page.waitForTimeout(1500);
   }
+  console.log(`Stopped after ${MAX_SCROLL_STEPS} scrolls without reaching message ${mid}.`);
   return false;
 }
 
@@ -804,22 +898,31 @@ function orderNewestFirst(messageIds) {
 // up empty is tried once more from there. A walk that started at the newest end
 // has already seen the whole history, so it is not repeated — an id that
 // belongs to another chat costs one walk, not two.
+//
+// Neither walk pages in history the target cannot be in: each stops as soon as
+// the pane reaches messages older than the target's own id. So the first walk
+// bails out of a pane it is already behind almost at once, and the second is
+// bounded by how old the target is rather than by how long the conversation is.
 export function createMessageFinder(page, { maxHistoryWaits = MAX_HISTORY_WAITS } = {}) {
   // Where openChat leaves the pane, and the only thing the walks below move
-  // away from.
+  // away from. Not every walk moves it: one that finds nothing left to scroll
+  // and no older history on its way gives up where it started. Taking such a
+  // walk for a move would make the next id that is genuinely missing walk the
+  // history twice — once from where the pane still is, then again from a newest
+  // end it never left.
   let paneAtNewest = true;
+  const onPaneMoved = () => { paneAtNewest = false; };
 
   return async function findMessage(mid) {
     const startedAtNewest = paneAtNewest;
-    // Either walk may leave the pane part way back through the history.
-    paneAtNewest = false;
 
-    if (await scrollMessageIntoView(page, mid, { maxHistoryWaits })) return true;
+    if (await scrollMessageIntoView(page, mid, { maxHistoryWaits, onPaneMoved })) return true;
     if (startedAtNewest) return false;
 
     console.log(`Message ${mid} is not behind the pane — looking again from the newest messages...`);
     await scrollToNewest(page);
-    return scrollMessageIntoView(page, mid, { maxHistoryWaits });
+    paneAtNewest = true;
+    return scrollMessageIntoView(page, mid, { maxHistoryWaits, onPaneMoved });
   };
 }
 

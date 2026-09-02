@@ -208,10 +208,20 @@ incomplete one is dropped and Teams reloaded so that it is fetched again. That
 costs one page load plus the wait for the sync (up to a minute, on the run that
 finds it), and says so as it happens.
 
-The chat history is scrolled back until the messages are found, so reacting to an
-old message takes as long as reading that far back. Reacting is a toggle in
-Teams, so a reaction you already left is never clicked again — that would take
-it back; to take one back on purpose, use `unreact-to-message.mjs` below.
+The chat history is scrolled back until the messages are found, so reacting to
+an old message takes as long as reading that far back. That walk reports every
+step it takes, and it stops once the pane reaches messages older than the one it
+is looking for: an id that belongs to another chat, or to a message that has
+been deleted, fails as soon as the history reaches its age rather than after
+paging back through the whole conversation. The bound is on the id's age, so a
+bad id older than everything in this chat is never reached past and still costs
+a walk to the beginning — as does one that is not a plain number, since only
+those carry a time to compare. Both are capped by the step and history-page
+limits regardless, so neither runs forever.
+
+Reacting is a toggle in Teams, so a reaction you already left is never clicked
+again — that would take it back; to take one back on purpose, use
+`unreact-to-message.mjs` below.
 
 ### 5. Take a reaction back
 
