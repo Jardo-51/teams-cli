@@ -47,8 +47,11 @@ const OVERFLOW_POLL_MS = 250;
 // the row arriving at all.
 const OVERFLOW_SETTLE_MS = 2000;
 
-// How many reactions of ours one message may have taken off it in a single run,
-// applied to each of the two places they can be. It is a bound rather than a
+// How many reactions of ours one message may have taken off it in a single run.
+// One budget for the message, shared by the two places a reaction of ours can
+// be: what the "+N" overflow is drained of comes off the same count the pills
+// are then taken off, so a message that gave up this many from behind its
+// overflow has none left to give from its row. It is a bound rather than a
 // limit anyone should reach: the picker holds three buttons for the most
 // crowded character and none of them can be applied twice. What it is really
 // for is keeping a reaction that the removal does not actually clear from being
