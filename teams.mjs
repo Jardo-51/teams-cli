@@ -747,12 +747,14 @@ function escapeRegExp(s) {
 
 // --- Message reactions -----------------------------------------------------
 //
-// What react-to-message.mjs and unreact-to-message.mjs share, which is nearly
-// everything: the same arguments, the same walk back through the history, the
-// same hover toolbar and the same emoji picker. The two differ only in which of
-// the picker's buttons they end up clicking and in what they then expect to
-// happen to the pill, so the plumbing lives here and each command keeps just
-// its half of that difference.
+// What react-to-message.mjs and unreact-to-message.mjs share: the same
+// arguments, the same walk back through the history, the same reading of the
+// pills a message carries, and the same discipline around the popups a message
+// opens. Where they part company is the click itself — reacting has to go
+// through the emoji picker, since the reaction it is about to leave is by
+// definition not on the message yet, whereas taking one back clicks the pill
+// the reaction already put there. So the plumbing lives here and each command
+// keeps only the click that is its own.
 
 // How often the walk back through the history may pause for a fetch of older
 // messages. The target can be arbitrarily far back, so the pauses are needed
@@ -773,6 +775,21 @@ const PICKER_TIMEOUT_MS = 15000;
 const PICKER_SETTLE_MS = 250;
 // How long the hover toolbar of the message gets to open.
 const MESSAGE_ACTIONS_TIMEOUT_MS = 15000;
+// How long the "+N" reaction overflow gets to render its rows. Like the picker
+// it puts its frame up before its contents, so this covers the rows arriving
+// rather than the popup opening.
+const REACTION_OVERFLOW_TIMEOUT_MS = 15000;
+// The flyout listing who reacted with what. Teams renders the same element for
+// both of the ways it can be raised — hovering a pill, and opening a message's
+// "+N" reaction overflow — so which one is on screen is a matter of what was
+// done to the message, not of what it is called.
+const REACTION_LIST_SELECTOR = '[data-tid="diverse-reaction-user-list"]';
+// How long any reaction flyout left over from an earlier hover is given to go
+// once the pointer has been moved off it. Best-effort: what it guards against
+// is a second [data-tid="diverse-reaction-user-list"] standing next to the one
+// the overflow is about to open, and a flyout that outlasts this is caught by
+// the check that follows rather than by the wait.
+const FLYOUT_CLOSE_MS = 3000;
 // How long the message itself is given to render after the history walk reports
 // it, before anything is read off it.
 const MESSAGE_TIMEOUT_MS = 15000;
@@ -1431,10 +1448,11 @@ async function readEmojiCatalog(page) {
 }
 
 // Clicks one of the reaction picker's emoji on a message, and leaves the picker
-// closed whichever way that goes. This is everything the two commands do to a
-// message once they have decided it needs something done to it, and they do it
-// in the same eight steps; what differs is only which button they are after and
-// what they then expect to happen to the pill, which is what they pass in:
+// closed whichever way that goes: raise the message's toolbar, open the picker,
+// walk it for the button, ask whether the click is still wanted, click, wait
+// for the message to show it, and dismiss the picker if any of that left it
+// standing. What the caller supplies is only the part that is about the
+// reaction rather than about the picker:
 //
 //   buttons(picker)  the candidates, narrowed from the open picker
 //   notInPicker()    the error to raise when the picker holds none of them
@@ -1446,16 +1464,16 @@ async function readEmojiCatalog(page) {
 // Returns whether a button was clicked — false when stillNeeded() has changed
 // its mind in the meantime.
 //
-// Kept whole here rather than written out in each command because the picker is
-// a modal popup and the protocol around it is the delicate part: two copies of
-// it would have to be kept in step by hand, and a divergence would leave the
-// popup standing over the message pane for the rest of the list.
+// Only react-to-message.mjs comes through here: taking a reaction back clicks
+// the pill the reaction left, which needs no picker at all. The callbacks stay
+// all the same, because what they carry is the wording a failure gets reported
+// with, and that belongs to the command rather than to this file.
 export async function clickPickerButton(page, message, mid, { buttons, notInPicker, stillNeeded, confirm }) {
-  let pickerOpen = false;
-  try {
-    const picker = await openReactionPicker(page, message, mid);
-    pickerOpen = true;
+  // Opened outside the protocol below on purpose: an open that fails dismisses
+  // whatever it left standing itself, and hands back nothing to close.
+  const picker = await openReactionPicker(page, message, mid);
 
+  return withOpenPopup(picker, () => page.keyboard.press('Escape'), async () => {
     const button = await findPickerButton(page, buttons(picker));
     if (!button) throw notInPicker();
     // Opening the picker and walking it gave the message plenty of time to
@@ -1466,20 +1484,34 @@ export async function clickPickerButton(page, message, mid, { buttons, notInPick
     if (!await stillNeeded()) return false;
 
     await button.click();
-    // Clicking an emoji closes the picker, so from here on there is nothing
-    // left to dismiss.
-    pickerOpen = false;
-
     await confirm();
     return true;
+  });
+}
+
+// Runs <body> with one of the message's popups open, and leaves that popup
+// closed whichever way the body goes. Both of the popups a reaction command
+// opens — the emoji picker and the "+N" reaction overflow — cover the message
+// pane while they are up: left standing, one costs every message after this one
+// its turn, since the next cannot even be hovered through it.
+//
+// Which of them is still open when the body is done is asked rather than
+// assumed, because the two do not behave alike: the picker goes on the click
+// that picks an emoji, whereas the overflow's menu survives the click that
+// takes a reaction back and re-renders with the rows that are left — it only
+// goes when the last reaction it was hiding does. Asking also keeps a run that
+// went well from dismissing something that is no longer there, which for the
+// picker would mean a stray Escape into the chat.
+//
+// <dismiss> is how this popup closes, which is not the same for both either:
+// Escape leaves the overflow's menu standing, and what closes it is another
+// click on the "+N" that opened it. A dismissal that itself fails must not
+// replace the failure that led here, hence the catch.
+export async function withOpenPopup(popup, dismiss, body) {
+  try {
+    return await body();
   } finally {
-    // The picker is a modal popup: left open it covers the message pane, and
-    // the next message cannot even be hovered through it — one message that
-    // went wrong would cost the rest of the list its turn for a reason of its
-    // own making. Only the ways out that leave it standing are dismissed, so
-    // that a run that went well sends no stray keystroke into the chat. A
-    // dismissal that itself fails must not replace the failure that led here.
-    if (pickerOpen) await page.keyboard.press('Escape').catch(() => {});
+    if (await popup.count().catch(() => 0) > 0) await dismiss().catch(() => {});
   }
 }
 
@@ -1538,6 +1570,66 @@ async function openMessageActions(page, message, mid) {
 // cannot be clicked, so only what is actually rendered counts as a match.
 export function pickerButtons(picker) {
   return picker.locator('[data-tid^="emoticon-button-"]:visible');
+}
+
+// The message's "+N" reaction overflow button. Teams renders a pill per
+// reaction only up to six of them; past that it renders five pills and this,
+// and the reactions behind it are not in the message's DOM at all — so a
+// reaction of ours that is not among the pills is not thereby absent.
+export function reactionOverflowButton(message) {
+  return message.locator('[data-tid="diverse-reaction-overflow-button"]');
+}
+
+// Opens that overflow and hands back the menu behind it: one row per reaction
+// it is hiding, each naming its emoji with the same img[itemid] the pills and
+// the picker's buttons carry, and each of ours carrying the button that takes
+// it back. Like the picker it is a modal popup, so from the moment this returns
+// every way out of the caller has to close it.
+export async function openReactionOverflow(page, message, mid) {
+  await message.scrollIntoViewIfNeeded();
+  // Hovering a pill opens a flyout of its own, and it is the same element as
+  // the overflow's menu — same data-tid, same rows. One left over from an
+  // earlier hover would stand beside the menu opened here and there would be no
+  // telling which rows belong to which, so the pointer is parked first and what
+  // is still open afterwards is refused rather than guessed at.
+  const menu = page.locator(`${REACTION_LIST_SELECTOR}:visible`);
+  await page.mouse.move(5, 5);
+  await menu.first().waitFor({ state: 'hidden', timeout: FLYOUT_CLOSE_MS }).catch(() => {});
+  if (await menu.count() > 0) {
+    throw new Error(
+      `A reaction flyout was already open over message ${mid} and did not go when the pointer was `
+      + 'moved off it, so the rows of the "+N" overflow could not be told apart from its own. It '
+      + 'is either a pill flyout that outstayed the hover that raised it, or an overflow left open '
+      + 'by whatever ran before this. Read the chat back before retrying.'
+    );
+  }
+
+  await reactionOverflowButton(message).first().click();
+  try {
+    // The menu's frame appears before its rows do, so wait for a row — reading
+    // the emoji off an empty menu would find none of ours.
+    await menu.locator('[data-tid="diverse-reaction-user-list-item"]').first()
+      .waitFor({ state: 'visible', timeout: REACTION_OVERFLOW_TIMEOUT_MS });
+  } catch (err) {
+    // The frame may be up even though its rows never arrived, and this call is
+    // about to fail rather than return — so the caller will not know there is
+    // anything to dismiss, and it has to be dismissed here.
+    await page.keyboard.press('Escape').catch(() => {});
+    throw new Error(
+      `The "+N" reaction overflow of message ${mid} did not open its list (no visible `
+      + `[data-tid="diverse-reaction-user-list-item"]). The Teams DOM has probably changed.`,
+      { cause: err }
+    );
+  }
+  return menu;
+}
+
+// Closes that overflow again. Its menu is not a popup Escape dismisses —
+// pressing Escape at it leaves it standing, unless one of its own rows happens
+// to hold the focus — so what closes it is another click on the "+N" that
+// opened it, which is a toggle.
+export function closeReactionOverflow(message) {
+  return reactionOverflowButton(message).first().click();
 }
 
 // Finds a button in the open picker, scrolling the list until one turns up.
