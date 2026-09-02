@@ -597,8 +597,12 @@ function readPaneState(page) {
 // Waits for an older-history fetch to land while the pane sits at the top of
 // the loaded range. Returns true if more history arrived within the grace
 // period — scrollTop cannot show this, since it is pinned at 0 either way.
-export async function waitForOlderHistory(page) {
-  const before = await readPaneState(page);
+//
+// Pass paneState when the pane has just been read: what the wait needs is the
+// state it is watching for a change to, and a caller that has reached the top of
+// the loaded history has read it moments ago.
+export async function waitForOlderHistory(page, paneState = null) {
+  const before = paneState ?? await readPaneState(page);
   if (!before) throw viewportGoneError();
 
   console.log('At the top of the loaded history — waiting for older messages...');
@@ -711,7 +715,7 @@ export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0, on
         }
         return false;
       }
-      if (!await waitForOlderHistory(page)) {
+      if (!await waitForOlderHistory(page, pane)) {
         // Which of the two readings this is — no more history, or a fetch too
         // slow to land inside the grace period — is exactly what cannot be told
         // apart here, so the line says what was seen and leaves it at that.
