@@ -192,6 +192,16 @@ the messages it could not react to. A failure that says nothing about the
 message — the emoji is not in the reaction picker, for instance — does stop it,
 since every id left would only meet the same failure again.
 
+Opening that picker stalls now and again, in one of three ways: the hover
+toolbar comes up with no "More reactions" entry to click, or the entry is
+clicked and no picker follows, or the picker opens and its emoji never render.
+None of them clear themselves while the command waits, so the open is made
+again from scratch — up to three times, saying which of the three it was each
+time it goes round. Only the click on an emoji changes anything, so an open that
+stalled part way costs nothing but the moment it takes to make again. A picker
+that has not opened after three attempts fails the message, naming the step the
+last attempt got stuck at.
+
 Pass the emoji character itself, not its name. Where several of the picker's
 emoji share one character (Teams has both an animated and a plain 👏, for
 example), the first one it offers is used.
