@@ -1642,7 +1642,15 @@ export async function openReactionOverflow(page, message, mid) {
     // holds the focus, and on this path no row ever rendered, so there is
     // nothing inside it that could. A menu left up covers the message pane, and
     // the next id in the list could then not even be hovered.
-    await closeReactionOverflow(page, message).catch(() => {});
+    //
+    // Whether there is a menu up at all is asked first, because the button is a
+    // toggle and this path covers both of the ways the rows can fail to arrive.
+    // A frame that went up without them closes on the second click; a click
+    // that never opened anything would be *opened* by it, which is the one way
+    // of leaving the pane covered that this block exists to rule out.
+    if (await menu.first().isVisible().catch(() => false)) {
+      await closeReactionOverflow(page, message).catch(() => {});
+    }
     throw new Error(
       `The "+N" reaction overflow of message ${mid} did not open its list (no visible `
       + `[data-tid="diverse-reaction-user-list-item"]). The Teams DOM has probably changed.`,
