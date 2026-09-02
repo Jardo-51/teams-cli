@@ -644,14 +644,20 @@ function isPastTarget(renderedMid, mid) {
 // those waits — hence the default of zero, which makes "not in the loaded
 // history" an immediate false rather than a fetch of the whole conversation.
 //
+// onPaneMoved is called the first time the walk disturbs where the pane sits.
+// Not every walk does: one that gives up before it scrolls leaves the pane
+// exactly as it found it, and a caller that remembers where the pane is would
+// otherwise have to assume the worst and re-scroll a pane that never moved.
+//
 // Every step says what it is doing. A walk of a few hundred steps at a second
 // and a half each runs for minutes, and one that goes quiet while it does is
 // indistinguishable from a hang.
-export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0 } = {}) {
+export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0, onPaneMoved } = {}) {
   const message = messageLocator(page, mid);
   let historyWaits = 0;
   for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
     if (await message.count() > 0) {
+      onPaneMoved?.();
       await message.scrollIntoViewIfNeeded().catch(() => {});
       return true;
     }
@@ -696,8 +702,12 @@ export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0 } =
         console.log(`Reached the beginning of the conversation without finding message ${mid}.`);
         return false;
       }
+      // History landing above the pane leaves it showing the same messages, but
+      // no longer at the end of the list it was pinned to.
+      onPaneMoved?.();
       continue;
     }
+    onPaneMoved?.();
     console.log(
       `Scrolling back for message ${mid} — step ${step + 1}/${MAX_SCROLL_STEPS}, `
       + `oldest message in view ${pane.oldestMid ?? 'unknown'}.`
@@ -872,20 +882,24 @@ function orderNewestFirst(messageIds) {
 // bounded by how old the target is rather than by how long the conversation is.
 export function createMessageFinder(page, { maxHistoryWaits = MAX_HISTORY_WAITS } = {}) {
   // Where openChat leaves the pane, and the only thing the walks below move
-  // away from.
+  // away from. A walk that stops before it scrolls — which is what an id the
+  // pane is already past costs — does not move it, and taking such a walk for a
+  // move would make the next id that is genuinely missing walk the history
+  // twice: once from where the pane still is, then again from a newest end it
+  // never left.
   let paneAtNewest = true;
+  const onPaneMoved = () => { paneAtNewest = false; };
 
   return async function findMessage(mid) {
     const startedAtNewest = paneAtNewest;
-    // Either walk may leave the pane part way back through the history.
-    paneAtNewest = false;
 
-    if (await scrollMessageIntoView(page, mid, { maxHistoryWaits })) return true;
+    if (await scrollMessageIntoView(page, mid, { maxHistoryWaits, onPaneMoved })) return true;
     if (startedAtNewest) return false;
 
     console.log(`Message ${mid} is not behind the pane — looking again from the newest messages...`);
     await scrollToNewest(page);
-    return scrollMessageIntoView(page, mid, { maxHistoryWaits });
+    paneAtNewest = true;
+    return scrollMessageIntoView(page, mid, { maxHistoryWaits, onPaneMoved });
   };
 }
 
