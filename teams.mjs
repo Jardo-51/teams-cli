@@ -20,12 +20,11 @@ export const AUTH_PATH = process.env.TEAMS_AUTH || '.auth/user.json';
 const TEAMS_URL = 'https://teams.microsoft.com/v2/?ctx=chat';
 // The origins a Teams tab's URL can have, for picking it out of the shared
 // browser's pages. The path is rewritten by the SPA as it is navigated; the
-// origin is not — but it is not the origin the tab was entered through either.
-// TEAMS_URL redirects to teams.cloud.microsoft, and the client has moved
-// between hosts before, so this lists the origins Teams lands on rather than
-// the one it is asked for. A hint rather than the last word, for the same
-// reason: a tab on a host missing from here is still recognised, by asking the
-// page itself — see refreshPage().
+// origin is not. TEAMS_URL redirects to teams.cloud.microsoft, though, and the
+// client has moved between hosts before, so this lists the origins Teams lands
+// on rather than the one it is asked for. A hint rather than the last word, for
+// the same reason: a tab on a host missing from here is still recognised, by
+// asking the page itself — see refreshPage().
 const TEAMS_ORIGINS = new Set([
   'https://teams.cloud.microsoft',
   'https://teams.microsoft.com',
