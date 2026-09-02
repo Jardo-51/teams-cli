@@ -771,7 +771,7 @@ const PICKER_SCROLL_FRACTION = 0.8;
 // the toolbar's "More reactions" entry, the picker's frame appearing, and its
 // emoji rendering. Short because an attempt is made up to PICKER_OPEN_ATTEMPTS
 // times, and because an open that is going to work is done in well under a
-// second — a step still outstanding after five is stuck rather than slow, and
+// second — a step still outstanding by then is stuck rather than slow, and
 // waiting on it only delays the retry that clears it.
 const PICKER_OPEN_STEP_TIMEOUT_MS = 5000;
 // How many times the picker's opening is attempted before the message is given
