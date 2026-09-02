@@ -1513,11 +1513,19 @@ export async function clickPickerButton(page, message, mid, { buttons, notInPick
 // Escape leaves the overflow's menu standing, and what closes it is another
 // click on the "+N" that opened it. A dismissal that itself fails must not
 // replace the failure that led here, hence the catch.
+//
+// What is asked is whether the popup is visible, not whether it is still in the
+// DOM. A popup that is only hidden covers nothing, so there is nothing to
+// dismiss and a dismissal sent at it is a stray keystroke or click into the
+// chat pane — which is precisely what asking rather than assuming is here to
+// avoid. Asking it here rather than leaving each caller to hand in a
+// :visible-filtered locator keeps the answer from depending on the caller
+// having remembered to.
 export async function withOpenPopup(popup, dismiss, body) {
   try {
     return await body();
   } finally {
-    if (await popup.count().catch(() => 0) > 0) await dismiss().catch(() => {});
+    if (await popup.first().isVisible().catch(() => false)) await dismiss().catch(() => {});
   }
 }
 
