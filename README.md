@@ -28,7 +28,8 @@ There are two ways to capture a session. Both save the same thing; pick whicheve
 suits you.
 
 **Manual.** Opens Teams in a visible browser. Log in by hand (including MFA); once
-the chat-list appears the session is saved automatically and you can close the window.
+the chat-list appears the session is saved automatically, and the script tells you
+when Teams has finished filling in its emoji catalog and the window can be closed.
 
 ```bash
 nix develop .#playwright --command node manual-login.mjs
@@ -62,6 +63,12 @@ Either way, stop the [browser daemon](#the-browser-daemon) first if it is runnin
 (`node teams-daemon.mjs --stop`) — two browsers on one profile write over each
 other's stored session. The login scripts refuse to open a browser rather than
 letting that happen.
+
+And either way, the chat list appearing is not the end of it: Teams goes on
+filling in its [emoji catalog](#4-react-to-a-message) for a few seconds
+afterwards, and a browser closed in that gap leaves the catalog half-filled. So
+both scripts wait for that sync to settle — saying so while they do — before
+`auto-login.mjs` closes the browser or `manual-login.mjs` tells you that you can.
 
 ### 2. Post a message
 
@@ -193,10 +200,13 @@ The emoji the picker offers come from a catalog Teams keeps in the browser
 profile and fills in once. A sync that was cut short — the browser closed part
 way through it — leaves a catalog the client treats as finished, whose missing
 categories render as empty headings in the picker; every emoji in them then
-looks as though Teams does not have it. Both reaction commands check the catalog
-before they start, and an incomplete one is dropped and Teams reloaded so that
-it is fetched again. That costs one page load plus the wait for the sync (up to a
-minute, on the run that finds it), and says so as it happens.
+looks as though Teams does not have it. The [login scripts](#1-log-in) wait for
+that sync rather than closing the browser on it, so a catalog that is short is
+now one from a profile logged in before they did, or from a run that was killed.
+Both reaction commands check the catalog before they start all the same, and an
+incomplete one is dropped and Teams reloaded so that it is fetched again. That
+costs one page load plus the wait for the sync (up to a minute, on the run that
+finds it), and says so as it happens.
 
 The chat history is scrolled back until the messages are found, so reacting to an
 old message takes as long as reading that far back. Reacting is a toggle in

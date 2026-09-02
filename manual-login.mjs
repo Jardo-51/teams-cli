@@ -1,4 +1,4 @@
-import { beginLogin, waitForChatList, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
+import { beginLogin, waitForChatList, waitForEmojiCatalog, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node manual-login.mjs
@@ -27,10 +27,29 @@ try {
   // localStorage — expected, and it only happens this one time).
   await context.storageState({ path: AUTH_PATH });
   console.log(`Login captured — cookies saved to "${AUTH_PATH}", profile at "${PROFILE_DIR}".`);
-  console.log('You can close the browser window now.');
 
-  // Wait for the window to close so the persistent profile is flushed too.
-  await new Promise((resolve) => context.on('close', resolve));
+  // Waited for before the window is offered up, not after: Teams is still
+  // writing its emoji catalog for a few seconds after the chat list appears,
+  // and a window closed in that gap leaves the catalog half-filled. Nobody
+  // reading "you can close it now" should have to know that.
+  await waitForEmojiCatalog(page);
+
+  // Both of the steps below are for a window that is still open, and after a
+  // wait of up to a minute that is no longer a given: waitForEmojiCatalog()
+  // returns quietly when the user closes the window while it is running, which
+  // on the one script whose ordinary ending is the user closing the window is
+  // an ordinary way for it to end. Saying "you can close it now" at a window
+  // that is already gone reads as the script not having noticed, and the wait
+  // below would never end — the context's close event fired while the window
+  // went, and a listener attached afterwards waits for an event that has
+  // already been and gone, so the finally that releases the command lock is
+  // never reached.
+  if (!page.isClosed()) {
+    console.log('You can close the browser window now.');
+
+    // Wait for the window to close so the persistent profile is flushed too.
+    await new Promise((resolve) => context.on('close', resolve));
+  }
 } catch (err) {
   await context.close();
   throw err;

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
-import { beginLogin, waitForChatList, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
+import { beginLogin, waitForChatList, waitForEmojiCatalog, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node auto-login.mjs
@@ -297,6 +297,23 @@ try {
   // localStorage — expected, and it only happens this one time).
   await context.storageState({ path: AUTH_PATH });
   console.log(`Login captured — cookies saved to "${AUTH_PATH}", profile at "${PROFILE_DIR}".`);
+
+  // The chat list is not the client having finished loading. Closing the
+  // browser in the seconds the emoji catalog is being written is what leaves
+  // the half-filled catalog the reaction commands then have to repair, so the
+  // sync is given its chance before the browser goes.
+  //
+  // This is the run that has to do the waiting because it is the run that
+  // creates the catalog. Other commands close browsers too — under
+  // TEAMS_DAEMON=0 every one of them gets its own and closes it the moment its
+  // work is done — but they only ever open a profile whose catalog a login has
+  // already seen through, and Teams does not fetch a catalog it has marked
+  // finished. There is nothing left for them to cut short.
+  //
+  // After the capture rather than before it: the session is what this run is
+  // for and is already on disk by now, so nothing about the waiting below can
+  // cost it.
+  await waitForEmojiCatalog(page);
 
   // Close the browser ourselves now that the session is saved. Closing the
   // context flushes the persistent profile to disk, so there is nothing left

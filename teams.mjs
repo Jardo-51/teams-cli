@@ -652,12 +652,37 @@ const REACTION_SETTLE_MS = 5000;
 // a reaction is only really applied, or really taken back, once the server has
 // accepted it.
 export const REACTION_TIMEOUT_MS = 15000;
-// How long the client is given to sync its emoji catalog again after an
-// incomplete one has been dropped. The sync runs on its own once the tab is
-// back up, so this only bounds how long a command waits for it.
+// How long the client is given to sync its emoji catalog: after an incomplete
+// one has been dropped, and after a login, before the browser is closed on it.
+// The sync runs on its own once the tab is up, so this only bounds how long the
+// waiting side gives it.
 const EMOJI_CATALOG_SYNC_TIMEOUT_MS = 60000;
 // How often the catalog is asked whether that sync has filled it in.
 const EMOJI_CATALOG_POLL_MS = 2000;
+// How long the catalog has to stay exactly as it is before the sync writing it
+// is taken to have finished. Three polls: the categories land within a second
+// of one another, so a catalog this still is one nothing is writing to, not one
+// caught between two categories.
+const EMOJI_CATALOG_SETTLE_MS = 6000;
+// How long into a login's wait the sync is taken to have started by, before
+// which a still catalog is not taken as a finished one. Stillness can only ever
+// be asked of the catalogs that exist when it is asked, and the profile
+// directory outlives a re-login: a profile that has already held one account
+// carries that account's complete catalog, which sits there perfectly still
+// from the very first poll while the catalog the login is actually waiting for
+// has not been created yet. Waiting this out first is what keeps a wait from
+// settling on the wrong one and closing the browser on the sync it exists to
+// protect. Measured at 5.5-8s between the chat list and the first emoji
+// records, on a warm profile and a cold one alike, so this is comfortably over
+// twice the delay it covers; the cost is that a login whose catalog was already
+// complete waits here rather than returning at the first stillness.
+//
+// The same moment answers the opposite question, being where a catalog that has
+// never once been readable stops meaning "the sync has not got to it yet" and
+// starts meaning "there is nothing here this code can find" — the storage
+// assumptions below having gone stale. Past this point the sync has either
+// written something or it is not going to.
+const EMOJI_CATALOG_SYNC_START_BY_MS = 20000;
 // The catalog's own category for the emoji we reached for most recently. It is
 // empty until we have picked one, which is a state of ours rather than a gap in
 // the catalog, so it is not counted as one.
@@ -870,6 +895,127 @@ export function ownReactionPills(page, message, emoji) {
 export function emojiImage(page, emoji) {
   const bare = emoji.replace(/\uFE0F/g, '');
   return page.locator(`img[alt="${bare}"], img[alt="${bare}\uFE0F"]`);
+}
+
+// Waits for the client to finish writing its emoji catalog, so that a browser
+// closed on it moments later does not cut the sync in half.
+//
+// The chat list rendering is not the client having finished loading. The
+// catalog is fetched into IndexedDB seconds after the rail is up: on a run
+// measured here the first emoji landed 5.5s later and the last of them half a
+// second after that, and in between the catalog listed all ten categories while
+// two of them still held nothing. A browser closed anywhere in that window
+// leaves behind precisely the catalog ensureEmojiCatalog() below then has to
+// drop and fetch again, which is why the login scripts wait here rather than
+// leaving the next reaction command to find it.
+//
+// What is waited for is the catalog going still, not its categories all being
+// filled — the stronger of the two, and the cheaper. Stronger because a sync
+// stopped part way through a category leaves every category non-empty while
+// still being unfinished, which nothing about the catalog's contents can see
+// (readEmojiCatalog below says why). Cheaper because a category that is empty
+// for good — one the tenant has uploaded no emoji of — settles like any other,
+// where waiting for it to fill would sit out the whole budget on every login.
+//
+// Stillness on its own is not enough, though, because it is only ever asked of
+// the catalogs that are already there. A profile that has held another account
+// still holds that account's finished catalog, which is still from the first
+// poll onwards, so the wait is floored as well as bounded: nothing counts as
+// settled until the sync has had long enough to have created its database.
+//
+// Nothing here raises. A login that reached the chat list has done what it was
+// for, and a catalog that is short is repairable later by the commands that
+// care about it; all this can do is spare them the trouble, so it says how it
+// went and returns either way.
+export async function waitForEmojiCatalog(page) {
+  console.log('Waiting for the emoji catalog to finish syncing...');
+  const started = Date.now();
+  const deadline = started + EMOJI_CATALOG_SYNC_TIMEOUT_MS;
+  const syncStartedBy = started + EMOJI_CATALOG_SYNC_START_BY_MS;
+  let previous = null;
+  let unchangedSince = started;
+  let everRead = false;
+  for (;;) {
+    // The window being watched is one a person can close by hand, and a browser
+    // that is gone is not a sync to wait for. Left quietly rather than
+    // reported: closing the window is the user ending the login, not a fault,
+    // and raising into the login's error path would say otherwise.
+    if (page.isClosed()) return;
+
+    const catalog = await readEmojiCatalog(page);
+    if (catalog) everRead = true;
+    // Compared as text because it is only ever asked whether the counts are the
+    // ones from the poll before, never how they differ. Sorted first so that
+    // what is compared is the counts rather than the order they arrived in:
+    // the keys come out in whatever order indexedDB.databases() lists the
+    // databases, which nothing specifies, and a profile holding more than one
+    // catalog would otherwise be able to restart the settle window on a
+    // reshuffle alone — for the whole budget, without a single count moving.
+    const counts = catalog && JSON.stringify(Object.entries(catalog.emojiCounts).sort());
+    // A catalog that cannot be read yet is the ordinary state of the first
+    // seconds after a login — Teams has not created the database — and a
+    // catalog that has just grown is one being written to. Neither is stillness,
+    // so both start the settle window over instead of ending the wait.
+    if (counts !== null && counts === previous) {
+      // Both bars have to be cleared, and they answer different questions.
+      // The settle window says nothing is writing to the catalogs that are
+      // here; the floor says the one this login is waiting for is among them,
+      // which on a reused profile the settle window alone cannot tell (the
+      // constant says why). Only the floor is measured from the start of the
+      // wait — a catalog that goes still late still gets its settle window in
+      // full, so this delays a return and never brings one forward.
+      const settled = Date.now() - unchangedSince >= EMOJI_CATALOG_SETTLE_MS;
+      if (settled && Date.now() >= syncStartedBy) {
+        const total = Object.values(catalog.emojiCounts).reduce((sum, count) => sum + count, 0);
+        if (!catalog.emptyCategories.length) {
+          console.log(`The emoji catalog is complete (${total} emoji).`);
+        } else {
+          // Said rather than repaired: this is a login, and dropping the
+          // catalog it just fetched to fetch it once more is a poor answer to a
+          // gap that may not be one. The commands that need the picker check it
+          // again for themselves.
+          console.log(
+            `The emoji catalog has settled at ${total} emoji, but has none for `
+            + `${catalog.emptyCategories.join(', ')}. Either the tenant has uploaded no emoji of `
+            + 'those kinds, or the sync stopped short; a reaction command will drop the catalog '
+            + 'and fetch it again if it finds the gap.'
+          );
+        }
+        return;
+      }
+    } else {
+      previous = counts;
+      unchangedSince = Date.now();
+    }
+    // A catalog that has not been readable once by the time the sync is due to
+    // have started is not a slow sync — it is a catalog this code can no longer
+    // find, and the rest of the budget cannot change that. Given the shorter
+    // deadline of the two so that the day the storage assumptions go stale is
+    // reported while the user is still watching, rather than as a silent minute
+    // on every login that the "waiting for the sync" line above misreads as the
+    // sync being slow.
+    if (!everRead && Date.now() >= syncStartedBy) {
+      console.log(
+        `${EMOJI_CATALOG_SYNC_START_BY_MS / 1000}s on there is still no emoji catalog to read — `
+        + 'carrying on. Teams has either not started the sync or has moved the catalog, which is '
+        + 'a difference a reaction command reports.'
+      );
+      return;
+    }
+    // Only ever a catalog that was read and went on changing: one that was
+    // never read has returned above, a good forty seconds earlier.
+    if (Date.now() >= deadline) {
+      console.log(
+        `The emoji catalog was still being written ${EMOJI_CATALOG_SYNC_TIMEOUT_MS / 1000}s on `
+        + '— carrying on rather than waiting longer, so it may be left short. A reaction '
+        + 'command drops a short catalog and fetches it again.'
+      );
+      return;
+    }
+    // Swallowed for the same reason as the check at the top of the loop, which
+    // is what a page closed during the pause lands on next.
+    await page.waitForTimeout(EMOJI_CATALOG_POLL_MS).catch(() => {});
+  }
 }
 
 // Makes sure the client has the whole emoji catalog before the picker is asked
