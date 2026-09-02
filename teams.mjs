@@ -567,11 +567,17 @@ export function scrollUp(page) {
 // The pane's scroll extent and the id of the topmost rendered message — the two
 // things that move when older history is added to the list. Null when the
 // viewport element could not be found.
+//
+// The oldest message is looked up inside the viewport rather than in the
+// document at large: a chat-pane message can be rendered outside the scrolling
+// list — a quoted message, or the previous chat's pane, which stays mounted for
+// a moment after a switch — and one of those earlier in the document would hand
+// back an id belonging to nothing this call measures.
 function readPaneState(page) {
   return page.evaluate(() => {
     const viewport = document.querySelector('[data-tid="message-pane-list-viewport"]');
     if (!viewport) return null;
-    const oldest = document.querySelector('[data-tid="chat-pane-message"]');
+    const oldest = viewport.querySelector('[data-tid="chat-pane-message"]');
     return {
       scrollHeight: viewport.scrollHeight,
       oldestMid: oldest?.getAttribute('data-mid') ?? null,
