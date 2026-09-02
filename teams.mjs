@@ -1613,8 +1613,13 @@ export async function openReactionOverflow(page, message, mid) {
   } catch (err) {
     // The frame may be up even though its rows never arrived, and this call is
     // about to fail rather than return — so the caller will not know there is
-    // anything to dismiss, and it has to be dismissed here.
-    await page.keyboard.press('Escape').catch(() => {});
+    // anything to dismiss, and it has to be dismissed here. It is dismissed the
+    // way closeReactionOverflow below says this popup is dismissed, by clicking
+    // the "+N" again: Escape leaves the menu standing unless one of its own rows
+    // holds the focus, and on this path no row ever rendered, so there is
+    // nothing inside it that could. A menu left up covers the message pane, and
+    // the next id in the list could then not even be hovered.
+    await closeReactionOverflow(message).catch(() => {});
     throw new Error(
       `The "+N" reaction overflow of message ${mid} did not open its list (no visible `
       + `[data-tid="diverse-reaction-user-list-item"]). The Teams DOM has probably changed.`,
