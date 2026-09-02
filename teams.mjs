@@ -799,6 +799,10 @@ const POINTER_PARK = { x: 5, y: 5 };
 // miss should cost a moment and let the failure that led there stand, not sit
 // out Playwright's 30s once per message.
 const OVERFLOW_CLOSE_CLICK_MS = 2000;
+// How long the "+N" is given to come back when the menu it opened is still up
+// without it. That pairing means the reaction row is between renders rather
+// than done with the overflow, and a row comes back within a frame or two.
+const OVERFLOW_REAPPEAR_MS = 2000;
 // How long any reaction flyout left over from an earlier hover is given to go
 // once the pointer has been moved off it. Best-effort: what it guards against
 // is a second [data-tid="diverse-reaction-user-list"] standing next to the one
@@ -1680,7 +1684,27 @@ export async function closeReactionOverflow(page, message) {
     await overflow.click({ timeout: OVERFLOW_CLOSE_CLICK_MS });
     return;
   }
+
   await parkPointer(page);
+  // The park is also what tells the two apart, which is worth doing rather than
+  // taking the button's absence at its word: the reaction row is rebuilt
+  // whenever a reaction changes, and a button asked for in the middle of that
+  // is missing for a moment exactly the way one that is really gone is. A hover
+  // flyout goes with the pointer that was on it, whereas this menu — opened by
+  // a click — stays. So anything still up after the park is the menu, which
+  // means the toggle was merely mid-re-render and is worth waiting for: parking
+  // has done nothing to a menu still covering the pane.
+  const menu = page.locator(`${REACTION_LIST_SELECTOR}:visible`);
+  if (await menu.count() === 0) return;
+
+  await overflow.waitFor({ state: 'visible', timeout: OVERFLOW_REAPPEAR_MS }).catch(() => {});
+  // Still nothing to click: the menu is left standing rather than the failure
+  // that led here being replaced by a click that cannot land. The next message
+  // of the list opens its overflow through openReactionOverflow, which refuses
+  // to read rows through a flyout it did not open and says so.
+  if (await overflow.count() > 0) {
+    await overflow.click({ timeout: OVERFLOW_CLOSE_CLICK_MS }).catch(() => {});
+  }
 }
 
 // Moves the pointer off whatever it is hovering, so that a reaction pill under

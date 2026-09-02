@@ -152,15 +152,42 @@ async function removeReaction(page, mid, resolvedName, findMessage) {
 // one back there: what a later removal promotes is by then someone else's.
 async function unreactAll(page, message, mid) {
   const ownPills = ownReactionPills(page, message, emoji);
-  let removed = await hasOverflow(message)
+
+  // Read plainly on the way in. The "+N" is part of the same reaction row
+  // settleReactions has already waited for the first pill of, and every message
+  // that is hiding nothing — which is nearly all of them — would otherwise pay
+  // for a look at an overflow it does not have.
+  let removed = await reactionOverflowButton(message).count() > 0
     ? await unreactOverflowed(page, message, mid)
     : 0;
+  removed += await unreactPills(page, message, mid, ownPills, removed);
+  if (removed > 0) return removed;
 
-  while (removed < MAX_OWN_REACTIONS) {
+  // Nothing found in either place is the one verdict of this command that is
+  // reported as a success and then never revisited, so it is not left resting
+  // on that plain read. A row that rendered its pills a tick before the button
+  // beside them would have been taken for a message hiding nothing, and a
+  // reaction of ours behind that "+N" reported as absent — the false success
+  // issue #23 was filed to kill, reached from the other side. Only this verdict
+  // pays for the second look: a message that has just given up a reaction has
+  // proved its row rendered.
+  if (!await hasOverflow(message)) return 0;
+  removed = await unreactOverflowed(page, message, mid);
+  // Draining an overflow promotes what it was hiding into the rendered row, so
+  // the pills are worth another pass even though the one above found none.
+  return removed + await unreactPills(page, message, mid, ownPills, removed);
+}
+
+// Takes back the reactions the message renders a pill for, one click each,
+// until it renders none of ours — or until the run has taken this message's
+// budget off it, <already> of which is spent. Returns how many went here.
+async function unreactPills(page, message, mid, ownPills, already) {
+  let removed = 0;
+  while (already + removed < MAX_OWN_REACTIONS) {
     // The second look is only worth its wait while nothing has been removed
     // yet: after a removal an empty reaction row is the expected end of this
     // loop rather than a pill that may still be on its way.
-    if (!await hasOwnPill(ownPills, removed === 0)) break;
+    if (!await hasOwnPill(ownPills, already + removed === 0)) break;
     await unreactPill(page, message, mid, ownPills);
     removed++;
   }
