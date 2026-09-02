@@ -243,12 +243,19 @@ as having nothing to remove, rather than treated as a failure, so re-running the
 command is harmless.
 
 The reaction that is taken back is the exact one you left, not merely one that
-looks the same: where several of the picker's emoji share a character, clicking
-the wrong one of them would add a second reaction instead of removing the first.
-If you left more than one of those look-alikes on the same message — which takes
-reacting by hand in the client, since `react-to-message.mjs` leaves a message
-that already carries your reaction alone — every one of them is taken back, and
-the run says how many.
+looks the same: several of the picker's emoji share a character, so a message can
+carry two reactions of yours that render alike. The removal clicks the reaction
+itself rather than looking one up by its character, so it can only ever take back
+the one it clicked. If you left more than one of those look-alikes on the same
+message — which takes reacting by hand in the client, since `react-to-message.mjs`
+leaves a message that already carries your reaction alone — every one of them is
+taken back, and the run says how many.
+
+Reactions you cannot see on the message are taken back too. Teams shows a message
+only six reactions at a time; past that it renders five and hides the rest behind
+a `+N` you have to open to see. Those are removed as well, so "nothing to remove"
+means the reaction is not on the message at all, not merely that it is not on
+display.
 
 ## The browser daemon
 
