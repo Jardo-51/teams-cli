@@ -712,7 +712,13 @@ export async function scrollMessageIntoView(page, mid, { maxHistoryWaits = 0, on
         return false;
       }
       if (!await waitForOlderHistory(page)) {
-        console.log(`Reached the beginning of the conversation without finding message ${mid}.`);
+        // Which of the two readings this is — no more history, or a fetch too
+        // slow to land inside the grace period — is exactly what cannot be told
+        // apart here, so the line says what was seen and leaves it at that.
+        console.log(
+          `No older messages arrived within ${OLDER_HISTORY_GRACE_MS / 1000}s at the top of the `
+          + `loaded history, so the walk for message ${mid} stops here.`
+        );
         return false;
       }
       // History landing above the pane leaves it showing the same messages, but
