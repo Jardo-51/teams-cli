@@ -265,6 +265,19 @@ async function unreactOverflowed(page, message, mid) {
       // Read before the click, because it is what the removal is confirmed
       // against afterwards.
       const hidden = await hiddenReactionCount(message);
+      // No "+N" on the message means nothing is being hidden, so there is
+      // nothing left here to take back — whatever rows the menu is still
+      // showing, it is showing them over a message that has moved on. It has to
+      // be stopped on rather than clicked through, because zero is a baseline
+      // no confirmation can pass: confirmOverflowRemoved asks whether the count
+      // is still at or above what it was, and every count is at or above zero,
+      // so the confirmation would poll out the full timeout and then report a
+      // reaction the click had in fact taken back as one that would not go. The
+      // moment is reachable without anything being wrong: the overflow can
+      // collapse a tick before the menu it opened unmounts, and the reaction
+      // row is momentarily empty mid-re-render, which is the same thing
+      // REMOVAL_SETTLE_MS is ridden out everywhere else in this file.
+      if (hidden === 0) break;
       if (hidden === null) {
         throw new Error(
           `The "+N" reaction overflow of message ${mid} does not say how many reactions it is `
