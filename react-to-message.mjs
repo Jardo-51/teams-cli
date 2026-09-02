@@ -72,9 +72,9 @@ async function reactToMessage(page, mid, resolvedName, findMessage) {
   console.log(`Looking for message ${mid}...`);
   if (!await findMessage(mid)) {
     throw new Error(
-      `Message ${mid} was not found in "${resolvedName}" — the history was walked back past `
-      + 'the point where a message of that age would sit without it turning up. Check that the '
-      + 'id belongs to this chat and that the message has not been deleted.'
+      `Message ${mid} was not found in "${resolvedName}" — the history was walked back as far `
+      + 'as one run goes without it turning up, and the walk said above what stopped it. Check '
+      + 'that the id belongs to this chat and that the message has not been deleted.'
     );
   }
 
