@@ -788,7 +788,11 @@ const PICKER_RETRY_CLOSE_MS = 3000;
 // How long each scroll step of the picker is given to render the emoji it moved
 // into view, before that window is searched.
 const PICKER_SETTLE_MS = 250;
-// How long the hover toolbar of the message gets to open.
+// How long each step of raising the message's hover toolbar gets: scrolling the
+// message into view, the hover itself, and the toolbar that follows. Explicit on
+// all three because there is no default set anywhere in this repo, and letting
+// Playwright's own 30s stand on the first two would let a message that cannot be
+// reached hold a run up twice over before the toolbar was even asked for.
 const MESSAGE_ACTIONS_TIMEOUT_MS = 15000;
 // How long the "+N" reaction overflow gets to render its rows. Like the picker
 // it puts its frame up before its contents, so this covers the rows arriving
@@ -1578,15 +1582,30 @@ export async function withOpenPopup(popup, dismiss, body) {
 // The toolbar is raised inside the loop but its failure is not retried: it
 // throws straight out of here, because a toolbar that never opens on hover has
 // said something about the DOM rather than about timing, and taking that same
-// wait three times only makes the same failure three times as slow.
+// wait three times only makes the same failure three times as slow. What does
+// travel out with it is the stall that sent the run round again, so that the
+// attempt whose diagnosis this exists to produce is not lost behind a hover.
 async function openReactionPicker(page, message, mid) {
   const picker = page.locator('[data-tid="reaction-picker-root"]');
+  // What the attempt before got stuck at, kept so a toolbar that then fails to
+  // come back up is not reported as if it were the first hover of the message.
+  let stalled = null;
 
   for (let attempt = 1; ; attempt++) {
-    const actions = await openMessageActions(page, message, mid);
+    const actions = await openMessageActions(page, message, mid).catch((err) => {
+      if (!stalled) throw err;
+      throw new Error(
+        `The reaction picker of message ${mid} did not open, and the toolbar did not come back up `
+        + `for another attempt at it: ${err.message} That verdict is a first hover's, though — `
+        + 'reached here after a stall, a picker or a toolbar left standing over the message is the '
+        + `likelier reading. The attempt before got as far as this: ${stalled.message}.`,
+        { cause: err }
+      );
+    });
     try {
       return await openPickerFromToolbar(actions, picker);
     } catch (err) {
+      stalled = err;
       // The attempt may have left the frame standing without its list, and this
       // call is about to fail or go round again — neither of which hands the
       // caller anything to close, so it is closed here. Asked rather than
@@ -1675,8 +1694,8 @@ async function openPickerFromToolbar(actions, picker) {
 // the only thing tying the two together, so it is matched on rather than
 // assumed: reacting to whatever else is hovered would be worse than failing.
 async function openMessageActions(page, message, mid) {
-  await message.scrollIntoViewIfNeeded();
-  await message.hover();
+  await message.scrollIntoViewIfNeeded({ timeout: MESSAGE_ACTIONS_TIMEOUT_MS });
+  await message.hover({ timeout: MESSAGE_ACTIONS_TIMEOUT_MS });
 
   const actions = page.locator(`[data-tid="message-actions-container"][id="${mid}-popover-surface"]`);
   await actions.waitFor({ state: 'visible', timeout: MESSAGE_ACTIONS_TIMEOUT_MS }).catch((err) => {
