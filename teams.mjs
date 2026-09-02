@@ -23,8 +23,9 @@ const TEAMS_URL = 'https://teams.microsoft.com/v2/?ctx=chat';
 // origin is not — but it is not the origin the tab was entered through either.
 // TEAMS_URL redirects to teams.cloud.microsoft, and the client has moved
 // between hosts before, so this lists the origins Teams lands on rather than
-// the one it is asked for. An origin missing from here reads as "no Teams tab
-// open" and costs a full reload of a page that was already signed in.
+// the one it is asked for. A hint rather than the last word, for the same
+// reason: a tab on a host missing from here is still recognised, by asking the
+// page itself — see refreshPage().
 const TEAMS_ORIGINS = [
   'https://teams.cloud.microsoft/',
   'https://teams.microsoft.com/',
@@ -34,6 +35,12 @@ const TEAMS_ORIGINS = [
 // stale and reloaded. A healthy tab has it rendered already, so this only has to
 // cover a client that is busy, not one that is booting.
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
+// How long a page on an origin TEAMS_ORIGINS does not list gets to prove it is a
+// Teams tab after all. Shorter than the health check above, which covers a known
+// Teams tab that is merely busy: this one is asked of pages that are usually not
+// Teams at all, and every one that isn't waits it out in full before the tab
+// that is can be found.
+const TEAMS_PROBE_TIMEOUT_MS = 3000;
 // How long the message pane gets to settle after being scrolled to the newest
 // messages, so the virtualised list has rendered that end before it is read.
 const PANE_SETTLE_MS = 2500;
@@ -229,7 +236,27 @@ async function refreshPage(context) {
   // "continue in the desktop app" window or a link a previous run followed can
   // sit in front of it — and the reload below would then navigate that popup
   // and leave the signed-in tab open beside it.
-  const teams = open.find(p => TEAMS_ORIGINS.some(origin => p.url().startsWith(origin)));
+  let teams = open.find(p => TEAMS_ORIGINS.some(origin => p.url().startsWith(origin)));
+  // The origin list is a hint, not the only thing that may recognise a Teams
+  // tab. It has gone stale before, and a signed-in tab on a host missing from it
+  // would not merely be reloaded: with a popup open in front, it is the popup
+  // that gets picked below and navigated, while the tab holding the session is
+  // closed as a stray. So when no origin matches, ask the pages themselves —
+  // showsChatList() answers "is this a working Teams tab?" without reference to
+  // the URL. An unknown host then costs a probe of what is open, rather than a
+  // reload and a lost session tab.
+  // Set when the probe finds the tab, since passing it is also the answer to the
+  // health check further down, which is then not asked twice.
+  let healthy = false;
+  if (!teams) {
+    for (const candidate of open) {
+      if (await showsChatList(candidate, { timeout: TEAMS_PROBE_TIMEOUT_MS })) {
+        teams = candidate;
+        healthy = true;
+        break;
+      }
+    }
+  }
   // Anything else open is reused rather than replaced with a fresh tab, so that
   // a signed-in tab caught mid-redirect through the login origin is navigated
   // back to Teams instead of being abandoned for a second one.
@@ -244,7 +271,7 @@ async function refreshPage(context) {
   if (!teams) {
     console.log('The shared browser has no Teams tab — opening one...');
     await loadTeams(page);
-  } else if (!await showsChatList(page)) {
+  } else if (!healthy && !await showsChatList(page)) {
     // A tab that has been alive across a suspend can be signed out or wedged.
     // Reload it once here, so that a stale daemon surfaces as one slow command
     // rather than as a confusing failure deep inside the calling script.
@@ -264,8 +291,8 @@ async function refreshPage(context) {
 
 // Whether the page has the chat list up right now. A healthy tab has it
 // rendered already, so this is a health check rather than a wait for a boot.
-function showsChatList(page) {
-  return waitForChatList(page, { timeout: HEALTH_CHECK_TIMEOUT_MS }).then(() => true, () => false);
+function showsChatList(page, { timeout = HEALTH_CHECK_TIMEOUT_MS } = {}) {
+  return waitForChatList(page, { timeout }).then(() => true, () => false);
 }
 
 async function loadTeams(page) {
