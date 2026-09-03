@@ -767,13 +767,41 @@ const MAX_PICKER_SCROLL_STEPS = 200;
 // How much of the picker's height each of those steps moves. Kept below 1 so
 // consecutive rendered windows overlap and no row falls between them.
 const PICKER_SCROLL_FRACTION = 0.8;
-// How long the picker gets to render its emoji. Its frame appears first, so this
-// covers the list arriving, not the popup opening.
-const PICKER_TIMEOUT_MS = 15000;
+// How long each step of one attempt at opening the picker gets: the click on
+// the toolbar's "More reactions" entry, the picker's frame appearing, and its
+// emoji rendering. Short because an attempt is made up to PICKER_OPEN_ATTEMPTS
+// times, and because an open that is going to work is done in well under a
+// second — a step still outstanding by then is stuck rather than slow, and
+// waiting on it only delays the retry that clears it.
+const PICKER_OPEN_STEP_TIMEOUT_MS = 5000;
+// How many times the picker's opening is attempted before the message is given
+// up on. Opening it changes nothing on the message — only the click on an emoji
+// does — so an attempt that stalled part of the way through costs nothing but
+// the second or two it takes to make again.
+//
+// Kept low because what it multiplies is not only the three steps above: each
+// attempt raises the toolbar first, and that has waits of its own. So the worst
+// a wholly unresponsive message can now cost is minutes rather than the 15
+// seconds it used to, and every one of those attempts is spent on a message
+// that has already failed twice. Three is the most that is worth spending
+// before the run says so and moves on to the next id.
+const PICKER_OPEN_ATTEMPTS = 3;
+// How long each of the things the retry waits to see the back of is given to go
+// before the next attempt is made regardless: the picker left standing by a
+// stalled attempt, once an Escape has been sent at it, and the toolbar, once the
+// pointer has been parked off the message. Best-effort: the waits are there so
+// that attempt hovers a message no popup covers and no toolbar is already up
+// over, and anything outstaying them is caught by that attempt's own failure
+// rather than here.
+const PICKER_RETRY_CLOSE_MS = 3000;
 // How long each scroll step of the picker is given to render the emoji it moved
 // into view, before that window is searched.
 const PICKER_SETTLE_MS = 250;
-// How long the hover toolbar of the message gets to open.
+// How long each step of raising the message's hover toolbar gets: scrolling the
+// message into view, the hover itself, and the toolbar that follows. Explicit on
+// all three because there is no default set anywhere in this repo, and letting
+// Playwright's own 30s stand on the first two would let a message that cannot be
+// reached hold a run up twice over before the toolbar was even asked for.
 const MESSAGE_ACTIONS_TIMEOUT_MS = 15000;
 // How long the "+N" reaction overflow gets to render its rows. Like the picker
 // it puts its frame up before its contents, so this covers the rows arriving
@@ -1546,29 +1574,152 @@ export async function withOpenPopup(popup, dismiss, body) {
 // The picker is a modal popup: from the moment this returns, every way out of
 // the caller has to close it, or the message pane stays covered and the next
 // message cannot even be hovered.
+//
+// The open is attempted up to PICKER_OPEN_ATTEMPTS times because it stalls now
+// and again for no reason the run can see: the toolbar comes up without its
+// "More reactions" entry, or the entry is clicked and no picker follows, or the
+// picker's frame arrives and its emoji never do. None of that clears itself
+// while the attempt waits on it — an open that works is done in a few hundred
+// milliseconds — and it does clear on a later attempt often enough to be worth
+// taking. Retrying is safe because opening the picker changes nothing on the
+// message; only the click on an emoji does, and that is the caller's.
+//
+// Between attempts the pointer is parked off the message so the toolbar drops
+// and is raised again from scratch, rather than a second hover arriving at the
+// point the pointer already sits on and changing nothing — and the drop is
+// waited for, since parking only dispatches the move and says nothing about
+// what the page then does with it.
+//
+// The toolbar is raised inside the loop but its failure is not retried: it
+// throws straight out of here, because a toolbar that never opens on hover has
+// said something about the DOM rather than about timing, and taking that same
+// wait three times only makes the same failure three times as slow. What does
+// travel out with it is the stall that sent the run round again, so that the
+// attempt whose diagnosis this exists to produce is not lost behind a hover.
 async function openReactionPicker(page, message, mid) {
-  const actions = await openMessageActions(page, message, mid);
-
-  // Forced past the actionability check on purpose: for a message at the top of
-  // the pane the toolbar renders under the pinned-message banner, which sits on
-  // top of the "More reactions" button and intercepts the click. The button is
-  // the right target — it is just visually overlapped — so the receives-events
-  // check is the wrong guard here and would only time out.
-  await actions.locator('[data-tid="expanded-reactions-picker-entry"]').click({ force: true });
-
   const picker = page.locator('[data-tid="reaction-picker-root"]');
-  try {
-    // The picker's frame appears before its emoji do, so wait for the list
-    // itself — searching it while it is still empty would find nothing.
-    await picker.locator('[data-tid^="emoticon-button-"]').first()
-      .waitFor({ state: 'visible', timeout: PICKER_TIMEOUT_MS });
-  } catch (err) {
-    // The frame is up even though its list never arrived, and this call is
-    // about to fail rather than return — so the caller will not know there is
-    // anything to dismiss, and it has to be dismissed here.
-    await page.keyboard.press('Escape').catch(() => {});
-    throw err;
+  // What the attempt before got stuck at, kept so a toolbar that then fails to
+  // come back up is not reported as if it were the first hover of the message.
+  let stalled = null;
+
+  for (let attempt = 1; ; attempt++) {
+    const actions = await openMessageActions(page, message, mid).catch((err) => {
+      if (!stalled) throw err;
+      throw new Error(
+        `The reaction picker of message ${mid} did not open, and the toolbar did not come back up `
+        + `for another attempt at it: ${err.message} That verdict is a first hover's, though — `
+        + 'reached here after a stall, a picker or a toolbar left standing over the message is the '
+        + `likelier reading. The attempt before got as far as this: ${stalled.message}.`,
+        { cause: err }
+      );
+    });
+    try {
+      return await openPickerFromToolbar(actions, picker);
+    } catch (err) {
+      stalled = err;
+      // The attempt may have left the frame standing without its list, and this
+      // call is about to fail or go round again — neither of which hands the
+      // caller anything to close, so it is closed here. Asked rather than
+      // assumed: an Escape sent at a picker that never opened is a stray
+      // keystroke into the chat.
+      if (await picker.first().isVisible().catch(() => false)) {
+        await page.keyboard.press('Escape').catch(() => {});
+        // Waited on rather than sent and forgotten. The next thing the loop does
+        // is hover the message again, and a picker still up covers the pane so
+        // that hover cannot land — and since it is made outside the try, a modal
+        // that intercepted it would cost not a slower retry but the retry
+        // itself, reported as a toolbar that never opened on hover rather than
+        // as the picker trouble this is all here to name.
+        await picker.first().waitFor({ state: 'hidden', timeout: PICKER_RETRY_CLOSE_MS })
+          .catch(() => {});
+      }
+
+      // Compared with >= rather than ===: this is the only thing standing
+      // between the loop and going round for ever, so it holds for whatever
+      // PICKER_OPEN_ATTEMPTS is set to, including a value someone drops below
+      // one while working out where a stall comes from.
+      if (attempt >= PICKER_OPEN_ATTEMPTS) {
+        throw new Error(
+          `The reaction picker of message ${mid} did not open in ${PICKER_OPEN_ATTEMPTS} attempts. `
+          + `The last of them got as far as this: ${err.message}.`,
+          { cause: err }
+        );
+      }
+
+      console.log(
+        `The reaction picker of message ${mid} did not open — ${err.message}. `
+        + `Trying again (attempt ${attempt + 1} of ${PICKER_OPEN_ATTEMPTS})...`
+      );
+      await parkPointer(page);
+      // Waited on the way openReactionOverflow waits after its own park: a
+      // toolbar still up when the next attempt hovers is the no-op the park is
+      // here to avoid, and the park on its own gives it no moment to go.
+      // Shrugged off if it stays — an attempt made into a toolbar that would not
+      // drop is still worth more than none, and it reports its own trouble.
+      await actions.first().waitFor({ state: 'hidden', timeout: PICKER_RETRY_CLOSE_MS })
+        .catch(() => {});
+    }
   }
+}
+
+// One attempt at the open, from a toolbar that is already up: click "More
+// reactions", wait for the picker's frame, then wait for the emoji inside it.
+//
+// The last two are separate waits on purpose. A frame that never opened and a
+// frame that opened empty are different failures wanting opposite fixes, and a
+// single wait on the emoji inside the frame — which is what this used to be —
+// reports them in the same words, naming only the emoji it never found.
+//
+// Each step says what it was that did not happen rather than letting Playwright's
+// own wording out, since these messages are read as the tail of the sentence the
+// caller builds out of them.
+async function openPickerFromToolbar(actions, picker) {
+  // The event is dispatched on the entry element rather than the button being
+  // clicked at its coordinates, because for a message near the top of the pane
+  // the toolbar renders under the pinned-message banner, which sits over the
+  // "More reactions" button. A pointer click is delivered to whatever is topmost
+  // at the point, and forcing it — which this used to do — waives only the check
+  // that would have caught the cover, not the cover itself: the event still
+  // lands on the banner. Clicking the banner scrolls the pane to the pinned
+  // message, weeks back, so the picker never opens and every later message in a
+  // batch is then hunted for in the wrong slice of history — one stuck open
+  // costing the whole run. Dispatching the click on the entry hands it to the
+  // button whatever overlaps it, which is the reason it is the one picked out by
+  // its data-tid: the target is known, so hit-testing is only in the way.
+  //
+  // Given an explicit timeout for the same reason the click was: there is no
+  // default set anywhere in this repo, and Playwright's own 30s is both far
+  // longer than reaching the entry can usefully take and long enough to make one
+  // stuck message swallow the budget of the retries meant to rescue it.
+  await actions.locator('[data-tid="expanded-reactions-picker-entry"]')
+    .dispatchEvent('click', {}, { timeout: PICKER_OPEN_STEP_TIMEOUT_MS })
+    .catch((err) => {
+      throw new Error('the toolbar came up with no "More reactions" entry to click', { cause: err });
+    });
+
+  // Narrowed with .first() because waitFor on a bare locator is strict: a hidden
+  // leftover root from the message before would make this throw a strict-mode
+  // violation the moment it was called, and the catch below would report that as
+  // a picker that never followed the click — three times over, since nothing a
+  // retry does removes the second root.
+  await picker.first().waitFor({ state: 'visible', timeout: PICKER_OPEN_STEP_TIMEOUT_MS })
+    .catch((err) => {
+      throw new Error('"More reactions" was clicked and no picker followed', { cause: err });
+    });
+
+  // The picker's frame appears before its emoji do, so wait for the list itself
+  // — searching it while it is still empty would find nothing. Asked through
+  // pickerButtons, which is where this file keeps what counts as an emoji that
+  // can be clicked at all: the picker holds hidden copies of its grids in the
+  // DOM, and a first() taken over the bare selector could settle on one of those
+  // and sit out the step reporting an empty list about a picker that rendered
+  // perfectly — which no retry could clear, the DOM order being what it is.
+  await pickerButtons(picker).first()
+    .waitFor({ state: 'visible', timeout: PICKER_OPEN_STEP_TIMEOUT_MS })
+    .catch((err) => {
+      throw new Error('the picker opened but its emoji list stayed empty', { cause: err });
+    });
+
   return picker;
 }
 
@@ -1577,8 +1728,8 @@ async function openReactionPicker(page, message, mid) {
 // the only thing tying the two together, so it is matched on rather than
 // assumed: reacting to whatever else is hovered would be worse than failing.
 async function openMessageActions(page, message, mid) {
-  await message.scrollIntoViewIfNeeded();
-  await message.hover();
+  await message.scrollIntoViewIfNeeded({ timeout: MESSAGE_ACTIONS_TIMEOUT_MS });
+  await message.hover({ timeout: MESSAGE_ACTIONS_TIMEOUT_MS });
 
   const actions = page.locator(`[data-tid="message-actions-container"][id="${mid}-popover-surface"]`);
   await actions.waitFor({ state: 'visible', timeout: MESSAGE_ACTIONS_TIMEOUT_MS }).catch((err) => {
