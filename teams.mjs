@@ -1674,18 +1674,25 @@ async function openReactionPicker(page, message, mid) {
 // own wording out, since these messages are read as the tail of the sentence the
 // caller builds out of them.
 async function openPickerFromToolbar(actions, picker) {
-  // Forced past the actionability check on purpose: for a message at the top of
-  // the pane the toolbar renders under the pinned-message banner, which sits on
-  // top of the "More reactions" button and intercepts the click. The button is
-  // the right target — it is just visually overlapped — so the receives-events
-  // check is the wrong guard here and would only time out.
+  // The event is dispatched on the entry element rather than the button being
+  // clicked at its coordinates, because for a message near the top of the pane
+  // the toolbar renders under the pinned-message banner, which sits over the
+  // "More reactions" button. A pointer click is delivered to whatever is topmost
+  // at the point, and forcing it — which this used to do — waives only the check
+  // that would have caught the cover, not the cover itself: the event still
+  // lands on the banner. Clicking the banner scrolls the pane to the pinned
+  // message, weeks back, so the picker never opens and every later message in a
+  // batch is then hunted for in the wrong slice of history — one stuck open
+  // costing the whole run. Dispatching the click on the entry hands it to the
+  // button whatever overlaps it, which is the reason it is the one picked out by
+  // its data-tid: the target is known, so hit-testing is only in the way.
   //
-  // Given an explicit timeout because there is no default set anywhere in this
-  // repo, and Playwright's own 30s is both far longer than this click can
-  // usefully take and long enough to make one stuck message swallow the budget
-  // of the retries meant to rescue it.
+  // Given an explicit timeout for the same reason the click was: there is no
+  // default set anywhere in this repo, and Playwright's own 30s is both far
+  // longer than reaching the entry can usefully take and long enough to make one
+  // stuck message swallow the budget of the retries meant to rescue it.
   await actions.locator('[data-tid="expanded-reactions-picker-entry"]')
-    .click({ force: true, timeout: PICKER_OPEN_STEP_TIMEOUT_MS })
+    .dispatchEvent('click', {}, { timeout: PICKER_OPEN_STEP_TIMEOUT_MS })
     .catch((err) => {
       throw new Error('the toolbar came up with no "More reactions" entry to click', { cause: err });
     });
