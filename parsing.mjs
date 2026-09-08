@@ -34,7 +34,8 @@ export function parsePostMessageArgs(args) {
 }
 
 // The message ids react-to-message.mjs and unreact-to-message.mjs are given,
-// which take the same arguments: one id, or several as a comma-separated list. Blank entries — a trailing or a doubled comma — are dropped rather than
+// which take the same arguments: one id, or several as a comma-separated list.
+// Blank entries — a trailing or a doubled comma — are dropped rather than
 // refused, since they say nothing about which messages are meant, and a
 // repeated id is collapsed: its second turn would only find what the first one
 // left and report it as needing nothing.
