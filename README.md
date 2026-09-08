@@ -347,6 +347,12 @@ and the argument helpers in `teams.mjs` do, including the markup
 `collectRenderedMessages` expects Teams to render — a fixture written with those
 ids and attributes stops matching if the selectors drift.
 
+`pnpm run check` parses every `.mjs` file git knows of, untracked ones included,
+so a script still being written is checked before it is ever committed. That is
+deliberate, and it means the check can fail locally over a file a CI checkout
+never has; the fix is the same either way, since a script that does not parse
+does not run.
+
 Both commands run on every push and pull request
 (`.github/workflows/ci.yml`). Driving Teams itself is not covered: that needs a
 live session, so anything a command does to the page is only ever proven by
