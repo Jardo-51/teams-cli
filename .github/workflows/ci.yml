@@ -5,11 +5,13 @@ on:
     branches: [main]
   pull_request:
 
-# A push to a branch with an open pull request would otherwise be checked twice,
-# and a new push makes the run of the one before it moot either way.
+# A new push makes the run of the one before it moot, so the older run is
+# cancelled rather than raced to a result nobody will read. Main is the
+# exception: a commit there keeps its own verdict, so that a bisect or a
+# per-commit status finds a result and not a cancellation.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   check:
