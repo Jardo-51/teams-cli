@@ -8,6 +8,9 @@
     "test": "node --test \"test/*.test.mjs\"",
     "check": "git ls-files -z --cached --others --exclude-standard '*.mjs' | xargs -0 -r -n1 node --check"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "@playwright/test": "1.56.1"
   }

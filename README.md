@@ -8,6 +8,9 @@ reactions on them or take them back.
 
 - [Nix](https://nixos.org/) with flakes enabled (provides Node.js, pnpm, and the
   Playwright browsers).
+- Node.js 22 or newer, which the dev shell already provides. The floor is
+  declared as `engines` in `package.json`: the test runner expands the
+  `test/*.test.mjs` glob itself, which older versions leave to the shell.
 
 ## Setup
 
