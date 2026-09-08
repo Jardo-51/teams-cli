@@ -16,6 +16,12 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # This job reads the repository and runs two commands against it; it writes
+    # nothing back. Saying so here caps the token it is handed, rather than
+    # letting it inherit whatever the repository's default happens to be — which
+    # on an older repository is write access to contents, issues and packages.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
 
