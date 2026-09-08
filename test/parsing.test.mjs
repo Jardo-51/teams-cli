@@ -321,3 +321,44 @@ test('collectRenderedMessages reads a message whose content is missing', () => {
 test('collectRenderedMessages returns nothing for a pane with no messages', () => {
   assert.deepEqual(collectRenderedMessages(fakeDocument([])), []);
 });
+
+test('collectRenderedMessages survives being serialised into the page', () => {
+  // page.evaluate() sends this function's source, not the module around it, so
+  // a reference to anything outside its own body — AUTHOR_GROUP_WINDOW_MS one
+  // declaration above it is the natural reach — compiles, imports and passes
+  // every test that calls it here, then throws in the page at runtime.
+  // new Function gives it exactly the bare global scope the page does, so such
+  // a reference fails here instead.
+  const inPage = new Function(`return (${collectRenderedMessages});`)();
+  const doc = fakeDocument([
+    chatItem([
+      el('div', { id: 'author-1785922526738' }, ['Ada Lovelace']),
+      chatMessage('1785922526738', [
+        el('time', { id: 'timestamp-1785922526738', datetime: '2026-08-01T09:15:26.738Z' }, ['09:15']),
+        el('div', { id: 'content-1785922526738' }, [
+          'see ',
+          el('a', { href: 'https://example.com/a/very/long/path' }, ['https://example.com/a/…']),
+        ]),
+        reactionPill(),
+      ]),
+    ]),
+  ]);
+
+  assert.deepEqual(inPage(doc), collectRenderedMessages(doc));
+});
+
+test('collectRenderedMessages reads the global document when given none', () => {
+  // The default argument is the only form the live command uses: page.evaluate()
+  // calls the function with nothing, and it reads the document of the page it
+  // landed in. Standing one up as the global is that same call.
+  const doc = fakeDocument([
+    chatItem([chatMessage('1785922526738', [el('div', { id: 'content-1785922526738' }, ['ship it?'])])]),
+  ]);
+
+  globalThis.document = doc;
+  try {
+    assert.deepEqual(collectRenderedMessages(), collectRenderedMessages(doc));
+  } finally {
+    delete globalThis.document;
+  }
+});
