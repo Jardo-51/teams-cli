@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Playwright automation for Microsoft Teams",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "check": "git ls-files --cached --others --exclude-standard '*.mjs' | xargs -n1 node --check"
+  },
   "dependencies": {
     "@playwright/test": "1.56.1"
   }

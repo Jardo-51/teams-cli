@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A push to a branch with an open pull request would otherwise be checked twice,
+# and a new push makes the run of the one before it moot either way.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: '11'
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      # Also what keeps pnpm-lock.yaml honest: a lockfile that no longer matches
+      # package.json fails here rather than at whichever install first notices.
+      - run: pnpm install --frozen-lockfile
+        env:
+          # Nothing here drives a browser — the commands get theirs from the Nix
+          # shell — so downloading one would only cost time.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+      - run: pnpm run check
+
+      - run: pnpm test

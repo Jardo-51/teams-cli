@@ -4,6 +4,9 @@ import {
   openTeams, waitForChatList, openChat, scrollUp, scrollToNewest, scrollMessageIntoView,
   messageLocator, waitForOlderHistory, viewportGoneError, paneNotScrollableError, MAX_SCROLL_STEPS,
 } from './teams.mjs';
+import {
+  carryForwardAuthors, collectRenderedMessages, parsePeriod, parseReadChatMessagesArgs,
+} from './parsing.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node read-chat-messages.mjs "<chat name>" "<period>" "<output file>" [--without-reactions-only]
@@ -25,18 +28,9 @@ import {
 // Consecutive scrolls that load nothing new before we assume the top of the
 // conversation has been reached.
 const MAX_STAGNANT_SCROLLS = 3;
-// How far apart two messages may be and still plausibly belong to the same
-// author group. Teams only groups messages that are close in time, so a
-// message with no author name that is further than this from its predecessor
-// lost its group header rather than being part of that group.
-const AUTHOR_GROUP_WINDOW_MS = 5 * 60_000;
 
-const args = process.argv.slice(2);
-const withoutReactionsOnly = args.includes('--without-reactions-only');
-const [chatName, period, outputFile] = args.filter(a => !a.startsWith('-'));
-
-// Catch a mistyped flag instead of silently reading it as the chat name.
-const unknownFlag = args.find(a => a.startsWith('-') && a !== '--without-reactions-only');
+const { chatName, period, outputFile, withoutReactionsOnly, unknownFlag } =
+  parseReadChatMessagesArgs(process.argv.slice(2));
 
 if (!chatName || !period || !outputFile || unknownFlag) {
   if (unknownFlag) console.log(`Unknown option "${unknownFlag}".`);
@@ -138,28 +132,12 @@ try {
   }
 
   // Consecutive messages from the same person are grouped and only the first
-  // carries the author name, so carry the last known author forward.
+  // carries the author name, so the grouped ones are attributed by the pass
+  // below rather than by what they render.
   const all = [...collected.values()]
     .filter(m => m.ts !== null)
     .sort((a, b) => a.ts - b.ts);
-
-  let lastAuthor = '';
-  let lastTime = -Infinity;
-  for (const m of all) {
-    if (m.author) {
-      lastAuthor = m.author;
-    } else if (m.ts - lastTime <= AUTHOR_GROUP_WINDOW_MS) {
-      m.author = lastAuthor;
-    } else {
-      // Too far from the previous message to belong to its group, so the header
-      // this one belongs to was never collected. Naming the previous author
-      // would confidently name the wrong person; leave it — and the rest of
-      // this group — unattributed instead.
-      lastAuthor = '';
-      m.author = '';
-    }
-    lastTime = m.ts;
-  }
+  carryForwardAuthors(all);
 
   const inRange = all.filter(m => m.ts >= cutoff);
   console.log(`${inRange.length} message(s) in the last ${period}.`);
@@ -203,53 +181,11 @@ try {
   await close();
 }
 
-// Reads every message currently rendered in the pane.
+// Reads every message currently rendered in the pane. The reading itself runs
+// in the page, which is why it is a function sent there rather than one called
+// here.
 function extractMessages(page) {
-  return page.evaluate(() => {
-    const messages = [];
-    for (const msg of document.querySelectorAll('[data-tid="chat-pane-message"]')) {
-      const mid = msg.getAttribute('data-mid');
-      if (!mid) continue;
-
-      const item = msg.closest('[data-tid="chat-pane-item"]');
-      // Teams message ids are the send time in epoch milliseconds, which is the
-      // fallback if the rendered <time> element is missing.
-      const timeEl = document.getElementById(`timestamp-${mid}`) ?? item?.querySelector('time[datetime]');
-      // Date only covers ±8.64e15 ms, so a longer numeric id would make
-      // toISOString() throw and take the whole run down with it.
-      const fromMid = /^\d+$/.test(mid) ? new Date(Number(mid)) : null;
-      const iso = timeEl?.getAttribute('datetime')
-        || (fromMid && Number.isFinite(fromMid.getTime()) ? fromMid.toISOString() : '');
-
-      const authorEl = document.getElementById(`author-${mid}`) ?? item?.querySelector('[data-tid="message-author-name"]');
-      const contentEl = document.getElementById(`content-${mid}`) ?? msg.querySelector('[data-message-content]');
-
-      // Parsed once here and carried alongside the ISO string, so the rest of
-      // the script sorts, compares and filters without re-parsing.
-      const ts = Date.parse(iso);
-
-      // innerText only carries the anchor's display text, which Teams truncates
-      // for long links (e.g. "https://.../…"), so the href is read separately to
-      // keep full URLs. Both are kept because the text is the human-facing label.
-      const links = contentEl
-        ? [...contentEl.querySelectorAll('a[href]')].map(a => ({
-            text: (a.textContent ?? '').trim(),
-            href: a.getAttribute('href'),
-          }))
-        : [];
-
-      messages.push({
-        id: mid,
-        time: iso,
-        ts: Number.isFinite(ts) ? ts : null,
-        author: authorEl?.textContent?.trim() ?? '',
-        body: (contentEl?.innerText ?? contentEl?.textContent ?? '').trim(),
-        links,
-        hasReactions: !!msg.querySelector('[data-tid="diverse-reaction-pill-button"]'),
-      });
-    }
-    return messages;
-  });
+  return page.evaluate(collectRenderedMessages);
 }
 
 // Hovering a reaction pill opens a flyout listing who reacted with it. Returns
@@ -345,13 +281,4 @@ function closeFlyout(page, userList) {
   return page.mouse.move(5, 5)
     .then(() => userList.first().waitFor({ state: 'hidden', timeout: 5000 }))
     .then(() => true, () => false);
-}
-
-function parsePeriod(value) {
-  const match = /^(\d+)\s*([mhd])$/i.exec(value.trim());
-  if (!match) return null;
-  const amount = Number(match[1]);
-  if (!amount) return null;
-  const unit = { m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2].toLowerCase()];
-  return amount * unit;
 }

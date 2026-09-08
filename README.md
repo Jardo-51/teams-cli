@@ -330,6 +330,27 @@ toolbar, the emoji catalog check and the emoji picker) — so each script only
 contains its own logic.
 `daemon.mjs` is the client side of the daemon: finding it, starting it, and
 serialising commands against it.
+`parsing.mjs` holds the parts that need no browser at all — the arguments the
+commands are started with, the period `read-chat-messages.mjs` is given, the
+author carry-forward, and the reading of the messages the page has rendered — so
+that they can be run, and tested, without one.
+
+## Tests
+
+```bash
+nix develop --command pnpm test        # the tests in test/
+nix develop --command pnpm run check   # node --check on every script
+```
+
+The tests use `node:test` from the standard library and cover what `parsing.mjs`
+and the argument helpers in `teams.mjs` do, including the markup
+`collectRenderedMessages` expects Teams to render — a fixture written with those
+ids and attributes stops matching if the selectors drift.
+
+Both commands run on every push and pull request
+(`.github/workflows/ci.yml`). Driving Teams itself is not covered: that needs a
+live session, so anything a command does to the page is only ever proven by
+running the command.
 
 ## Configuration
 
