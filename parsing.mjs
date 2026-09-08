@@ -33,6 +33,46 @@ export function parsePostMessageArgs(args) {
   return { chatName, message, dryRun };
 }
 
+// The message ids react-to-message.mjs and unreact-to-message.mjs are given,
+// which take the same arguments: one id, or several as a comma-separated list. Blank entries — a trailing or a doubled comma — are dropped rather than
+// refused, since they say nothing about which messages are meant, and a
+// repeated id is collapsed: its second turn would only find what the first one
+// left and report it as needing nothing.
+//
+// Returns { error } rather than throwing, so the caller can print it the way it
+// prints its own usage.
+export function parseMessageIds(messageIdList) {
+  const ids = [...new Set(messageIdList.split(',').map(id => id.trim()).filter(Boolean))];
+  if (!ids.length) {
+    return { error: `No message id in "${messageIdList}" — expected an id, or several as a comma-separated list.` };
+  }
+  // The ids end up inside CSS attribute selectors, so anything that could break
+  // out of one is refused rather than escaped — no message id legitimately
+  // contains such characters.
+  for (const id of ids) {
+    if (!/^[A-Za-z0-9_.:-]+$/.test(id)) {
+      return { error: `Invalid message id "${id}" — expected the id read-chat-messages.mjs reports, e.g. "1785922526738".` };
+    }
+  }
+  return { ids };
+}
+
+// Why the emoji argument cannot be used, or null when it can be. Same reasoning
+// as for the ids: it too is put into a CSS attribute selector.
+export function emojiArgumentError(emoji) {
+  if (/["'\\]/.test(emoji)) {
+    return `Invalid emoji "${emoji}" — expected a single emoji character, e.g. "👍".`;
+  }
+  // An emoji name ("thumbsup") or a word passes the check above and would only
+  // be refused minutes later, after the browser has opened and the picker has
+  // been walked. Every emoji lies outside ASCII, so that one cheap test rejects
+  // plain text here; anything finer is left to the picker lookup.
+  if (!/[^\x00-\x7F]/.test(emoji)) {
+    return `Invalid emoji "${emoji}" — expected the emoji character itself, e.g. "👍", not its name.`;
+  }
+  return null;
+}
+
 // A relative time span ending "now", as "<number><unit>" where the unit is m
 // (minutes), h (hours) or d (days) — e.g. "10m", "6h", "2d". Returns the span in
 // milliseconds, or null for anything that is not one of those. A span of zero is

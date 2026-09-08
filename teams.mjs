@@ -896,46 +896,6 @@ const EMOJI_DB_NAME_FRAGMENT = 'emoji-manager';
 const EMOJI_METADATA_STORE = 'teams-emoji-metadata';
 const EMOJI_STORE = 'teams-emoji';
 
-// The message ids a command was given: one id, or several as a comma-separated
-// list. Blank entries — a trailing or a doubled comma — are dropped rather than
-// refused, since they say nothing about which messages are meant, and a
-// repeated id is collapsed: its second turn would only find what the first one
-// left and report it as needing nothing.
-//
-// Returns { error } rather than throwing, so the caller can print it the way it
-// prints its own usage.
-export function parseMessageIds(messageIdList) {
-  const ids = [...new Set(messageIdList.split(',').map(id => id.trim()).filter(Boolean))];
-  if (!ids.length) {
-    return { error: `No message id in "${messageIdList}" — expected an id, or several as a comma-separated list.` };
-  }
-  // The ids end up inside CSS attribute selectors, so anything that could break
-  // out of one is refused rather than escaped — no message id legitimately
-  // contains such characters.
-  for (const id of ids) {
-    if (!/^[A-Za-z0-9_.:-]+$/.test(id)) {
-      return { error: `Invalid message id "${id}" — expected the id read-chat-messages.mjs reports, e.g. "1785922526738".` };
-    }
-  }
-  return { ids };
-}
-
-// Why the emoji argument cannot be used, or null when it can be. Same reasoning
-// as for the ids: it too is put into a CSS attribute selector.
-export function emojiArgumentError(emoji) {
-  if (/["'\\]/.test(emoji)) {
-    return `Invalid emoji "${emoji}" — expected a single emoji character, e.g. "👍".`;
-  }
-  // An emoji name ("thumbsup") or a word passes the check above and would only
-  // be refused minutes later, after the browser has opened and the picker has
-  // been walked. Every emoji lies outside ASCII, so that one cheap test rejects
-  // plain text here; anything finer is left to the picker lookup.
-  if (!/[^\x00-\x7F]/.test(emoji)) {
-    return `Invalid emoji "${emoji}" — expected the emoji character itself, e.g. "👍", not its name.`;
-  }
-  return null;
-}
-
 // The ids of a run in the order they should be worked through: newest first,
 // whatever order they were given in. The history walk only ever scrolls back,
 // so every target after the first is then older than where the pane already

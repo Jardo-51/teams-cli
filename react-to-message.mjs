@@ -1,8 +1,9 @@
 import {
   REACTION_TIMEOUT_MS, actOnMessages, clickPickerButton, createMessageFinder, describeMessage,
-  emojiArgumentError, emojiImage, ensureEmojiCatalog, messageLocator, openChat, openTeams,
-  ownReactionPills, parseMessageIds, pickerButtons, settleReactions, waitForChatList,
+  emojiImage, ensureEmojiCatalog, messageLocator, openChat, openTeams, ownReactionPills,
+  pickerButtons, settleReactions, waitForChatList,
 } from './teams.mjs';
+import { emojiArgumentError, parseMessageIds } from './parsing.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node react-to-message.mjs "<chat name>" "<message ids>" "<emoji>"

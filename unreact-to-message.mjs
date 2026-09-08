@@ -1,9 +1,9 @@
 import {
   REACTION_TIMEOUT_MS, actOnMessages, closeReactionOverflow, createMessageFinder, describeMessage,
-  emojiArgumentError, emojiImage, ensureEmojiCatalog, messageLocator, openChat,
-  openReactionOverflow, openTeams, ownReactionPills, parseMessageIds, reactionOverflowButton,
-  settleReactions, waitForChatList, withOpenPopup,
+  emojiImage, ensureEmojiCatalog, messageLocator, openChat, openReactionOverflow, openTeams,
+  ownReactionPills, reactionOverflowButton, settleReactions, waitForChatList, withOpenPopup,
 } from './teams.mjs';
+import { emojiArgumentError, parseMessageIds } from './parsing.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node unreact-to-message.mjs "<chat name>" "<message ids>" "<emoji>"
