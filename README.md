@@ -8,6 +8,9 @@ reactions on them or take them back.
 
 - [Nix](https://nixos.org/) with flakes enabled (provides Node.js, pnpm, and the
   Playwright browsers).
+- Node.js 22 or newer, which the dev shell already provides. The floor is
+  declared as `engines` in `package.json`: the test runner expands the
+  `test/*.test.mjs` glob itself, which older versions leave to the shell.
 
 ## Setup
 
@@ -325,11 +328,39 @@ which the other scripts restore before navigating.
 daemon, or from a browser of the command's own), the preamble both login scripts
 run before they can open a browser, finding and opening a chat by name, scrolling
 the message pane back through the history, and everything the two reaction
-commands do alike (their arguments, the walk to each message of a list, the hover
-toolbar, the emoji catalog check and the emoji picker) — so each script only
-contains its own logic.
+commands do alike (the walk to each message of a list, the hover toolbar, the
+emoji catalog check and the emoji picker) — so each script only contains its own
+logic.
 `daemon.mjs` is the client side of the daemon: finding it, starting it, and
 serialising commands against it.
+`parsing.mjs` holds the parts that need no browser at all — the arguments every
+command is started with, including the message ids and the emoji the two
+reaction commands validate, the period `read-chat-messages.mjs` is given, the
+author carry-forward, and the reading of the messages the page has rendered — so
+that they can be run, and tested, without one.
+
+## Tests
+
+```bash
+nix develop --command pnpm test        # the tests in test/
+nix develop --command pnpm run check   # node --check on every script
+```
+
+The tests use `node:test` from the standard library and cover what `parsing.mjs`
+does, including the markup `collectRenderedMessages` expects Teams to render — a
+fixture written with those ids and attributes stops matching if the selectors
+drift.
+
+`pnpm run check` parses every `.mjs` file git knows of, untracked ones included,
+so a script still being written is checked before it is ever committed. That is
+deliberate, and it means the check can fail locally over a file a CI checkout
+never has; the fix is the same either way, since a script that does not parse
+does not run.
+
+Both commands run on every push and pull request
+(`.github/workflows/ci.yml`). Driving Teams itself is not covered: that needs a
+live session, so anything a command does to the page is only ever proven by
+running the command.
 
 ## Configuration
 

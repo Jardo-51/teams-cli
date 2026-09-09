@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push makes the run of the one before it moot, so the older run is
+# cancelled rather than raced to a result nobody will read. Main is the
+# exception: a commit there keeps its own verdict, so that a bisect or a
+# per-commit status finds a result and not a cancellation.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # This job reads the repository and runs two commands against it; it writes
+    # nothing back. Saying so here caps the token it is handed, rather than
+    # letting it inherit whatever the repository's default happens to be — which
+    # on an older repository is write access to contents, issues and packages.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: '11'
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      # Also what keeps pnpm-lock.yaml honest: a lockfile that no longer matches
+      # package.json fails here rather than at whichever install first notices.
+      - run: pnpm install --frozen-lockfile
+        env:
+          # Nothing here drives a browser — the commands get theirs from the Nix
+          # shell — so downloading one would only cost time.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+      - run: pnpm run check
+
+      - run: pnpm test

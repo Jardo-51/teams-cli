@@ -5,6 +5,15 @@ Playwright automation for Microsoft Teams (web). Each command is a standalone
 shared-browser plumbing. See `README.md` for what the commands do and how to run
 them.
 
+## Checks
+
+`nix develop --command pnpm test` runs the tests (`node:test`, files in `test/`)
+and `nix develop --command pnpm run check` parses every script; both run in CI on
+every push and pull request. Only what needs no browser can be covered that way,
+which is what `parsing.mjs` is for — anything pure belongs there rather than
+inline in a command. Everything that drives the page is still only proven by
+running the command against a live session.
+
 ## Gotchas
 
 ### Module-level `const` must be declared above the run

@@ -1,4 +1,5 @@
 import { openTeams, waitForChatList, openChat, composerLocator, clearComposer, pasteIntoComposer } from './teams.mjs';
+import { parsePostMessageArgs } from './parsing.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node post-message.mjs "<chat name>" "<message>" [--dry-run]
@@ -10,10 +11,7 @@ import { openTeams, waitForChatList, openChat, composerLocator, clearComposer, p
 // With --dry-run the message is put into the compose box but NOT sent,
 // so you can confirm the correct chat is targeted before anything goes out.
 
-const args = process.argv.slice(2);
-const dryRun = args.includes('--dry-run');
-const positional = args.filter(a => a !== '--dry-run');
-const [chatName, message] = positional;
+const { chatName, message, dryRun } = parsePostMessageArgs(process.argv.slice(2));
 
 // A message of nothing but whitespace is rejected here rather than sent: Teams
 // treats such a compose box as empty and refuses the Enter, so it would go no
