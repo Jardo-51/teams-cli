@@ -1490,7 +1490,20 @@ export async function clickPickerButton(page, message, mid, { buttons, notInPick
     // was asked for.
     if (!await stillNeeded()) return false;
 
-    await button.click();
+    // Dispatched rather than clicked at its coordinates, for the same reason the
+    // "More reactions" entry above is: a message body with links leaves a
+    // link-preview tooltip standing after the hover that raised the toolbar — a
+    // role="tooltip" popper portaled at document level and placed bottom-start,
+    // which for some messages lands over the picker's emoji grid. A pointer
+    // click hit-tests its target point, finds the tooltip topmost over the
+    // button, and retries until it times out — deterministically, for whichever
+    // messages the tooltip's geometry happens to cover the picker on. The button
+    // is the one findPickerButton already picked out, so its identity is known
+    // and hit-testing is only in the way; dispatching hands the click straight to
+    // it whatever overlaps it. Nothing is waived that matters, because confirm()
+    // below waits for the message itself to show the reaction, so a dispatch that
+    // did not register is still caught rather than taken on trust.
+    await button.dispatchEvent('click', {}, { timeout: PICKER_OPEN_STEP_TIMEOUT_MS });
     await confirm();
     return true;
   });
