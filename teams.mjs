@@ -58,7 +58,9 @@ const COMPOSER_PASTE_TIMEOUT_MS = 10_000;
 // its session is alive. A healthy client has reached its chat service before the
 // chat list even renders, so this only ever runs out on one that is not: an
 // expired session is rendered out of the offline cache all the same, and Teams
-// only raises its "sign in again" banner some 40 seconds after that.
+// only raises its "sign in again" banner some 40 seconds after that. The daemon
+// waits this out on its way up, so daemon.mjs's STARTUP_TIMEOUT_MS has to stay
+// above it plus the wait for the chat list.
 const SESSION_CHECK_TIMEOUT_MS = 90_000;
 // How often that wait looks for the banner.
 const SESSION_POLL_MS = 500;
