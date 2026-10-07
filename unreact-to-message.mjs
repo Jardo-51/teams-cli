@@ -1,7 +1,7 @@
 import {
   REACTION_TIMEOUT_MS, actOnMessages, closeReactionOverflow, createMessageFinder, describeMessage,
   emojiImage, ensureEmojiCatalog, messageLocator, openChat, openReactionOverflow, openTeams,
-  ownReactionPills, reactionOverflowButton, settleReactions, waitForChatList, withOpenPopup,
+  ownReactionPills, reactionOverflowButton, settleReactions, waitForSignedIn, withOpenPopup,
 } from './teams.mjs';
 import { emojiArgumentError, parseMessageIds } from './parsing.mjs';
 
@@ -82,7 +82,7 @@ if (emojiError) {
 const { page, close } = await openTeams();
 
 try {
-  await waitForChatList(page);
+  await waitForSignedIn(page);
   // Before the chat is opened, so that a catalog that has to be synced again
   // costs one reload here rather than one after the history has been walked.
   await ensureEmojiCatalog(page);

@@ -162,3 +162,63 @@ export function collectRenderedMessages(doc = document) {
   }
   return messages;
 }
+
+// Whether a response the Teams page received proves its session is alive. The
+// client renders its chat list, and the messages of the chats it has open, out
+// of an offline cache before it has a working token for anything — and keeps
+// showing them when it never gets one — so a page that looks ready says nothing
+// about whether it is signed in. What it cannot do without a token is reach the
+// chat service: exchanging its token for the chat service's cookies
+// (skypetokenauth) and the chat service itself (chatsvc) both answer only a
+// signed-in client, and a healthy one calls both while it boots. A session that
+// has expired never gets as far as either, which is what makes a successful
+// answer from one of them the evidence to wait for.
+export function isSessionEvidence(url, status) {
+  if (status < 200 || status >= 300) return false;
+  const path = URL.parse(url)?.pathname ?? '';
+  return path.endsWith('/v1/skypetokenauth') || path.includes('/api/chatsvc/');
+}
+
+// The status Teams shows on a message it has not delivered yet. A message sent
+// from a client whose session has expired sits on "Sending..." and then on
+// "Retrying..." for as long as the page is open, while a delivered one turns to
+// "Sent" (or, later, to its read receipt) within a second or two.
+export function isPendingDelivery(status) {
+  return /^\s*(sending|retrying)\b/i.test(status ?? '');
+}
+
+// The ids of the messages rendered in the given document, for telling apart the
+// message a command has just sent from the ones that were already there.
+export function renderedMessageIds(doc = document) {
+  return [...doc.querySelectorAll('[data-tid="chat-pane-message"]')]
+    .map(msg => msg.getAttribute('data-mid'))
+    .filter(Boolean);
+}
+
+// The message just sent from this page, read off the given document: the last
+// rendered message that is not among knownIds and that carries a delivery
+// status. Only your own messages carry one, and only the newest of them, so a
+// message someone else sends meanwhile is never mistaken for it. Matched by that
+// rather than by its text, because what Teams renders is not what was pasted —
+// links are shortened, and an emoticon can come back as an image.
+//
+// Returns { mid, status, failed }, where status is the delivery status Teams
+// shows ("Sending...", "Sent") and failed whether it marked the message as not
+// sent; or null while no such message is rendered. Runs inside the page, like
+// collectRenderedMessages, so the ids it is given are a plain array.
+export function findSentMessage(knownIds, doc = document) {
+  const known = new Set(knownIds);
+  let found = null;
+  for (const msg of doc.querySelectorAll('[data-tid="chat-pane-message"]')) {
+    const mid = msg.getAttribute('data-mid');
+    if (!mid || known.has(mid)) continue;
+    // The id changes once the message is delivered — Teams swaps the id it made
+    // up for the one the server gave the message — so it is looked up afresh
+    // each time rather than remembered.
+    const status = doc.getElementById(`read-status-icon-${mid}`)?.getAttribute('aria-label') ?? null;
+    const failure = doc.getElementById(`failure-status-${mid}`);
+    if (status === null && !failure) continue;
+    found = { mid, status, failed: !!failure };
+  }
+  return found;
+}

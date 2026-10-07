@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   AUTHOR_GROUP_WINDOW_MS, carryForwardAuthors, collectRenderedMessages, emojiArgumentError,
-  parseMessageIds, parsePeriod, parsePostMessageArgs, parseReadChatMessagesArgs,
+  findSentMessage, isPendingDelivery, isSessionEvidence, parseMessageIds, parsePeriod,
+  parsePostMessageArgs, parseReadChatMessagesArgs, renderedMessageIds,
 } from '../parsing.mjs';
 import { el, fakeDocument } from './fake-dom.mjs';
 
@@ -424,4 +425,119 @@ test('collectRenderedMessages reads the global document when given none', () => 
   } finally {
     delete globalThis.document;
   }
+});
+
+test('isSessionEvidence accepts a successful answer from the chat service', () => {
+  // The requests a signed-in client makes while it boots, as a live run made them.
+  for (const url of [
+    'https://eu-api.asm.skype.com/v1/skypetokenauth',
+    'https://eu-prod.asyncgw.teams.microsoft.com/v1/skypetokenauth',
+    'https://teams.cloud.microsoft/api/chatsvc/emea/v1/threads/19%3Aabc%40thread.v2?view=msnp24Equivalent',
+    'https://teams.cloud.microsoft/api/chatsvc/emea/v1/users/ME/conversations/48%3Anotes/messages',
+  ]) {
+    assert.equal(isSessionEvidence(url, 200), true, url);
+    assert.equal(isSessionEvidence(url, 204), true, url);
+  }
+});
+
+test('isSessionEvidence refuses a failed answer from the chat service', () => {
+  // A 404 for a conversation that does not exist is still the service answering
+  // a signed-in client, but nothing here needs to lean on that; and a 401 is the
+  // very thing being looked for.
+  for (const status of [301, 401, 403, 404, 500]) {
+    assert.equal(isSessionEvidence('https://teams.cloud.microsoft/api/chatsvc/emea/v1/threads/x', status), false);
+    assert.equal(isSessionEvidence('https://eu-api.asm.skype.com/v1/skypetokenauth', status), false);
+  }
+});
+
+test('isSessionEvidence refuses what an expired session still gets answered', () => {
+  // An expired session still loads the client, its config and its telemetry,
+  // and the profile pictures cached behind a cookie — none of which needs a
+  // working token.
+  for (const url of [
+    'https://teams.microsoft.com/v2/',
+    'https://config.teams.microsoft.com/config/v1/MicrosoftTeams/1415_1.0.0.0',
+    'https://eu-teams.events.data.microsoft.com/OneCollector/1.0/',
+    'https://teams.cloud.microsoft/api/mt/part/emea-02/beta/users/x/profilepicturev2/8:orgid:x',
+    'https://login.microsoftonline.com/tenant/oauth2/v2.0/token',
+    'https://example.com/?next=/api/chatsvc/',
+    'not a url',
+  ]) {
+    assert.equal(isSessionEvidence(url, 200), false, url);
+  }
+});
+
+test('isPendingDelivery recognises the statuses of a message still on its way', () => {
+  for (const status of ['Sending...', 'Retrying...', 'sending', '  Retrying…']) {
+    assert.equal(isPendingDelivery(status), true, status);
+  }
+  for (const status of ['Sent', 'Seen', 'Read by Ada Lovelace', '', null, undefined]) {
+    assert.equal(isPendingDelivery(status), false, String(status));
+  }
+});
+
+// A message of your own as Teams renders it, with the delivery status it puts on
+// the newest one of them.
+function ownMessage(mid, { status = null, failed = false } = {}) {
+  return chatItem([
+    chatMessage(mid, [el('div', { id: `content-${mid}` }, ['ship it?'])]),
+    ...(status === null ? [] : [el('span', { id: `read-status-icon-${mid}`, 'aria-label': status, role: 'img' })]),
+    ...(failed ? [el('div', { id: `failure-status-${mid}` }, ['Failed to send'])] : []),
+  ]);
+}
+
+test('renderedMessageIds lists the rendered messages that have an id', () => {
+  const doc = fakeDocument([
+    ownMessage('1785922526738'),
+    chatItem([el('div', { 'data-tid': 'chat-pane-message' }, ['no id'])]),
+    ownMessage('1785922526739', { status: 'Sent' }),
+  ]);
+  assert.deepEqual(renderedMessageIds(doc), ['1785922526738', '1785922526739']);
+});
+
+test('findSentMessage finds the new message and reads its status', () => {
+  const doc = fakeDocument([
+    ownMessage('1785922526738'),
+    ownMessage('2730311426311008073', { status: 'Retrying...' }),
+  ]);
+  assert.deepEqual(findSentMessage(['1785922526738'], doc), {
+    mid: '2730311426311008073', status: 'Retrying...', failed: false,
+  });
+});
+
+test('findSentMessage ignores the messages that were there before', () => {
+  // The previous message of your own carries the status until the new one
+  // takes it over, and must not be read as the new one delivered.
+  const doc = fakeDocument([ownMessage('1785922526738', { status: 'Sent' })]);
+  assert.equal(findSentMessage(['1785922526738'], doc), null);
+});
+
+test('findSentMessage ignores a new message without a delivery status', () => {
+  // Someone else's message arriving meanwhile carries none.
+  const doc = fakeDocument([
+    ownMessage('1785922526738', { status: 'Sending...' }),
+    ownMessage('1785922526740'),
+  ]);
+  assert.deepEqual(findSentMessage([], doc), { mid: '1785922526738', status: 'Sending...', failed: false });
+});
+
+test('findSentMessage reports a message marked as not sent', () => {
+  const doc = fakeDocument([ownMessage('2730311426311008073', { failed: true })]);
+  assert.deepEqual(findSentMessage([], doc), { mid: '2730311426311008073', status: null, failed: true });
+});
+
+test('findSentMessage returns nothing before the message renders', () => {
+  assert.equal(findSentMessage(['1785922526738'], fakeDocument([ownMessage('1785922526738')])), null);
+});
+
+test('findSentMessage and renderedMessageIds survive being serialised into the page', () => {
+  // Both are sent to the page by page.evaluate(), as collectRenderedMessages is.
+  const doc = fakeDocument([
+    ownMessage('1785922526738'),
+    ownMessage('1785922526739', { status: 'Sent' }),
+  ]);
+  const ids = new Function(`return (${renderedMessageIds});`)();
+  const sent = new Function(`return (${findSentMessage});`)();
+  assert.deepEqual(ids(doc), renderedMessageIds(doc));
+  assert.deepEqual(sent(['1785922526738'], doc), findSentMessage(['1785922526738'], doc));
 });

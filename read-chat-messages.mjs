@@ -1,7 +1,7 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
-  openTeams, waitForChatList, openChat, scrollUp, scrollToNewest, scrollMessageIntoView,
+  openTeams, waitForSignedIn, openChat, scrollUp, scrollToNewest, scrollMessageIntoView,
   messageLocator, waitForOlderHistory, viewportGoneError, paneNotScrollableError, MAX_SCROLL_STEPS,
 } from './teams.mjs';
 import {
@@ -52,7 +52,7 @@ console.log(`Reading messages since ${new Date(cutoff).toISOString()} (last ${pe
 const { page, close } = await openTeams();
 
 try {
-  await waitForChatList(page);
+  await waitForSignedIn(page);
   await openChat(page, chatName);
 
   // Give the messages themselves a moment; a chat with none stays empty and
