@@ -495,6 +495,15 @@ function ownMessage(mid, { status = null, icon = status !== null, failed = false
   ]);
 }
 
+// The notBefore sendAndConfirm would ask about for the fixtures' new message: a
+// moment before the earliest of the ids they deliver it under.
+const NOT_BEFORE = 1785922526000;
+
+// findSentMessage as sendAndConfirm asks it.
+function findSent(knownIds, doc) {
+  return findSentMessage({ knownIds, notBefore: NOT_BEFORE }, doc);
+}
+
 test('renderedMessageIds lists the rendered messages that have an id', () => {
   const doc = fakeDocument([
     ownMessage('1785922526738'),
@@ -509,7 +518,7 @@ test('findSentMessage finds the new message and reads its status', () => {
     ownMessage('1785922526738'),
     ownMessage('2730311426311008073', { status: 'Retrying...' }),
   ]);
-  assert.deepEqual(findSentMessage(['1785922526738'], doc), {
+  assert.deepEqual(findSent(['1785922526738'], doc), {
     mid: '2730311426311008073', status: 'Retrying...', failed: false,
   });
 });
@@ -518,7 +527,20 @@ test('findSentMessage ignores the messages that were there before', () => {
   // The previous message of your own carries the status until the new one
   // takes it over, and must not be read as the new one delivered.
   const doc = fakeDocument([ownMessage('1785922526738', { status: 'Sent' })]);
-  assert.equal(findSentMessage(['1785922526738'], doc), null);
+  assert.equal(findSent(['1785922526738'], doc), null);
+});
+
+test('findSentMessage ignores an older message of your own that rendered late', () => {
+  // Not rendered when the known ids were taken — a pane still filling in, or
+  // one left scrolled up — and so not among them, but stamped well before the
+  // send. Until the new message renders it still carries its "Sent", and if the
+  // Enter sent nothing it carries it for good; neither is the new one delivered.
+  const older = ownMessage('1785922400000', { status: 'Sent' });
+  assert.equal(findSent([], fakeDocument([older])), null);
+  assert.deepEqual(
+    findSent([], fakeDocument([older, ownMessage('2730311426311008073', { status: 'Sending...' })])),
+    { mid: '2730311426311008073', status: 'Sending...', failed: false },
+  );
 });
 
 test('findSentMessage ignores a new message without a delivery status', () => {
@@ -527,23 +549,23 @@ test('findSentMessage ignores a new message without a delivery status', () => {
     ownMessage('1785922526738', { status: 'Sending...' }),
     ownMessage('1785922526740'),
   ]);
-  assert.deepEqual(findSentMessage([], doc), { mid: '1785922526738', status: 'Sending...', failed: false });
+  assert.deepEqual(findSent([], doc), { mid: '1785922526738', status: 'Sending...', failed: false });
 });
 
 test('findSentMessage finds a new message whose status icon carries no label', () => {
   // The label is in the client's language and only ever quoted; the icon being
   // there is what marks the message as your own.
   const doc = fakeDocument([ownMessage('1791383582085', { icon: true })]);
-  assert.deepEqual(findSentMessage([], doc), { mid: '1791383582085', status: null, failed: false });
+  assert.deepEqual(findSent([], doc), { mid: '1791383582085', status: null, failed: false });
 });
 
 test('findSentMessage reports a message marked as not sent', () => {
   const doc = fakeDocument([ownMessage('2730311426311008073', { failed: true })]);
-  assert.deepEqual(findSentMessage([], doc), { mid: '2730311426311008073', status: null, failed: true });
+  assert.deepEqual(findSent([], doc), { mid: '2730311426311008073', status: null, failed: true });
 });
 
 test('findSentMessage returns nothing before the message renders', () => {
-  assert.equal(findSentMessage(['1785922526738'], fakeDocument([ownMessage('1785922526738')])), null);
+  assert.equal(findSent(['1785922526738'], fakeDocument([ownMessage('1785922526738')])), null);
 });
 
 test('findSentMessage and renderedMessageIds survive being serialised into the page', () => {
@@ -555,5 +577,6 @@ test('findSentMessage and renderedMessageIds survive being serialised into the p
   const ids = new Function(`return (${renderedMessageIds});`)();
   const sent = new Function(`return (${findSentMessage});`)();
   assert.deepEqual(ids(doc), renderedMessageIds(doc));
-  assert.deepEqual(sent(['1785922526738'], doc), findSentMessage(['1785922526738'], doc));
+  const args = { knownIds: ['1785922526738'], notBefore: NOT_BEFORE };
+  assert.deepEqual(sent(args, doc), findSentMessage(args, doc));
 });

@@ -202,27 +202,41 @@ export function renderedMessageIds(doc = document) {
 }
 
 // The message just sent from this page, read off the given document: the last
-// rendered message that is not among knownIds and that carries a delivery
-// status. Only your own messages carry one, and only the newest of them, so a
-// message someone else sends meanwhile is never mistaken for it. Matched by that
-// rather than by its text, because what Teams renders is not what was pasted —
-// links are shortened, and an emoticon can come back as an image.
+// rendered message that is not among knownIds, is not stamped before notBefore,
+// and carries a delivery status. Only your own messages carry one, and only the
+// newest of them, so a message someone else sends meanwhile is never mistaken
+// for it. Matched by that rather than by its text, because what Teams renders is
+// not what was pasted — links are shortened, and an emoticon can come back as an
+// image.
+//
+// knownIds alone does not rule out your previous message. It lists what was
+// rendered when it was taken, and on a pane still filling in after a cold load,
+// or one a previous command left scrolled up, that message may only render
+// afterwards — still carrying its "Sent" until the new one takes the status over,
+// and carrying it for good if the Enter never sent anything. So a delivered id
+// (see isDeliveredMessageId) stamped before notBefore, which the caller puts at
+// the moment it sent less a margin for clocks, is taken for a message that was
+// there before as well. A message still on its way has an id that is no
+// timestamp, and is not affected.
 //
 // Returns { mid, status, failed }, where status is the delivery status Teams
 // shows ("Sending...", "Sent"), in the client's language and only for telling
 // the user, and failed whether it marked the message as not sent; or null while
 // no such message is rendered. Whether it was delivered is for
 // isDeliveredMessageId to say, from the id. Runs inside the page, like
-// collectRenderedMessages, so the ids it is given are a plain array.
-export function findSentMessage(knownIds, doc = document) {
+// collectRenderedMessages, so what it is given is plain data and the test for a
+// delivered id is written out again here rather than called.
+export function findSentMessage({ knownIds, notBefore }, doc = document) {
   const known = new Set(knownIds);
   let found = null;
   for (const msg of doc.querySelectorAll('[data-tid="chat-pane-message"]')) {
     const mid = msg.getAttribute('data-mid');
     if (!mid || known.has(mid)) continue;
+    if (/^\d{13}$/.test(mid) && Number(mid) < notBefore) continue;
     // The id changes once the message is delivered — Teams swaps the id it made
     // up for the one the server gave the message — so it is looked up afresh
     // each time rather than remembered.
+    //
     // The icon's being there is what marks the message as your own; its label
     // is only read out, so a client that labels it differently, or not at all,
     // still has its message found.

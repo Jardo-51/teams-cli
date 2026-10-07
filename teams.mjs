@@ -71,6 +71,14 @@ const SIGN_IN_BANNER_SELECTOR = '[data-tid^="banner-notification-action-auth-ban
 // delivered gets its id from the server, and turns to "Sent", within a couple of
 // seconds; one sent with an expired session never does.
 const DELIVERY_TIMEOUT_MS = 30_000;
+// How much earlier than the moment it was sent a delivered message's id may be
+// stamped and still be taken for the message just sent. The id is the send time
+// in epoch milliseconds, but by a clock other than this machine's, so a little
+// slack is needed; anything stamped further back is an older message of your own
+// that rendered late (see findSentMessage). Five minutes is the clock skew a
+// sign-in tolerates, so a machine further off than that has trouble before it
+// ever gets to post.
+const SENT_ID_SKEW_MS = 5 * 60_000;
 
 // How much of the viewport height each scroll step moves. Kept below 1 so
 // consecutive rendered windows overlap and nothing falls between them.
@@ -598,6 +606,7 @@ export async function waitForSignedIn(page, {
 // once it can, as one that may still go out by itself.
 export async function sendAndConfirm(page) {
   const knownIds = await page.evaluate(renderedMessageIds);
+  const notBefore = Date.now() - SENT_ID_SKEW_MS;
   await page.keyboard.press('Enter');
 
   const queued = 'Teams keeps the message queued and sends it once the session works again, so check '
@@ -605,7 +614,7 @@ export async function sendAndConfirm(page) {
   const deadline = Date.now() + DELIVERY_TIMEOUT_MS;
   let sent = null;
   for (;;) {
-    sent = await page.evaluate(findSentMessage, knownIds);
+    sent = await page.evaluate(findSentMessage, { knownIds, notBefore });
     if (sent && !sent.failed && isDeliveredMessageId(sent.mid)) return;
     if (await signInRequested(page)) {
       throw requestLogin(
