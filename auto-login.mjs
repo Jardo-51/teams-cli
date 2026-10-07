@@ -303,7 +303,11 @@ try {
   try {
     await waitForSignedIn(page, { timeout: 120000 });
   } catch (err) {
-    if (!(err instanceof SessionExpiredError)) throw err;
+    // Reworded only for the profile that went straight to the chat list, which
+    // is the one this wording describes. After a fresh sign-in it would send the
+    // user after a saved session that was never used, so there the error goes
+    // out as it came.
+    if (!(err instanceof SessionExpiredError) || landing !== 'chat list') throw err;
     throw new Error(
       'Teams opened on the session saved in the profile, which has expired, and asks to sign in again '
       + 'from inside the client — which this script does not drive. Log in with manual-login.mjs instead.',
