@@ -213,25 +213,51 @@ async function attachToDaemon() {
       // here would take the daemon's browser down with the first command.
       close: async () => {
         await browser.close().catch(() => {});
+        // close() is what every command's finally goes through, so this is where
+        // the login errors raised after the attach — the delivery check, the
+        // reload that repairs the emoji catalog — reach the daemon too. The
+        // error itself is on its way out of that finally, and is amended there.
+        if (loginRequest) await stopDaemonForLogin(loginRequest);
         await touchActivity();
         await release();
       },
     };
   } catch (err) {
     if (browser) await browser.close().catch(() => {});
-    // A daemon whose session has expired is no use to any command, and the login
-    // the error asks for refuses to run while it holds the profile — so it is
-    // stopped here rather than left for the user to find out about from the
-    // login script. Not an externally managed browser, which is not ours to stop.
-    if (err instanceof SessionExpiredError && !CDP_ENDPOINT) {
-      const stopped = await stopDaemon().catch(() => ({ stopped: false }));
-      err.message += stopped.stopped
-        ? ' The shared browser has been stopped, so the login can run straight away.'
-        : ' Stop the shared browser first: node teams-daemon.mjs --stop';
-    }
+    if (err === loginRequest) await stopDaemonForLogin(err);
     await release();
     throw err;
   }
+}
+
+// The error this run raised to tell the user to log in again, if it raised one.
+// Kept here rather than looked for on the way out, because the daemon's close()
+// runs in the command's finally and so never sees what is being thrown through
+// it. One run raises at most one: whatever raises it ends the run.
+let loginRequest = null;
+
+// Records err as one that tells the user to log in again, so that a daemon
+// holding the expired session gets stopped for the login (see
+// stopDaemonForLogin), and returns it for throwing.
+function requestLogin(err) {
+  loginRequest = err;
+  return err;
+}
+
+// Stops the daemon after an error that tells the user to log in again, and says
+// so on the error. A daemon whose session has expired is no use to any command,
+// and the login the error asks for refuses to run while it holds the profile — so
+// it is stopped here rather than left for the user to find out about from the
+// login script. Not an externally managed browser, which is not ours to stop.
+// Called from both ways out of a command on the shared browser — the attach
+// failing, and close() — which never both happen in one run, since an attach
+// that fails returns no close().
+async function stopDaemonForLogin(err) {
+  if (CDP_ENDPOINT) return;
+  const stopped = await stopDaemon().catch(() => ({ stopped: false }));
+  err.message += stopped.stopped
+    ? ' The shared browser has been stopped, so the login can run straight away.'
+    : ' Stop the shared browser first: node teams-daemon.mjs --stop';
 }
 
 // Attaches to the daemon's browser, retrying once with a fresh daemon. A daemon
@@ -546,17 +572,17 @@ export async function waitForSignedIn(page, {
   let announced = false;
   for (;;) {
     if (await signInRequested(page)) {
-      if (!onSignInRequested) throw new SessionExpiredError('Teams is asking to sign in again.');
+      if (!onSignInRequested) throw requestLogin(new SessionExpiredError('Teams is asking to sign in again.'));
       if (!announced) onSignInRequested();
       announced = true;
     } else if (!watch || watch.confirmed) {
       return;
     }
     if (Date.now() >= deadline) {
-      throw new SessionExpiredError(
+      throw requestLogin(new SessionExpiredError(
         `Teams showed its chat list but did not reach its chat service within ${sessionTimeout / 1000}s, `
         + 'so all it has is its offline cache.'
-      );
+      ));
     }
     await page.waitForTimeout(SESSION_POLL_MS);
   }
@@ -582,7 +608,9 @@ export async function sendAndConfirm(page) {
     sent = await page.evaluate(findSentMessage, knownIds);
     if (sent && !sent.failed && isDeliveredMessageId(sent.mid)) return;
     if (await signInRequested(page)) {
-      throw new SessionExpiredError(`The message was not delivered: Teams is asking to sign in again. ${queued}`);
+      throw requestLogin(
+        new SessionExpiredError(`The message was not delivered: Teams is asking to sign in again. ${queued}`),
+      );
     }
     if (sent?.failed || Date.now() >= deadline) break;
     await page.waitForTimeout(SESSION_POLL_MS);
@@ -597,11 +625,14 @@ export async function sendAndConfirm(page) {
   // The status is only quoted to the user, who reads the client's language too;
   // it is not what decided that the message was not delivered.
   const status = sent.failed ? 'marked as not sent' : `still ${sent.status ? `"${sent.status}"` : 'undelivered'}`;
-  throw new Error(
+  // Not a SessionExpiredError, since nothing here proves the session gone; but
+  // it asks for a login all the same, which a daemon left holding the profile
+  // would refuse.
+  throw requestLogin(new Error(
     `The message was not delivered: after ${DELIVERY_TIMEOUT_MS / 1000}s Teams has it ${status}. `
     + 'The usual cause is a login that has expired — log in again with manual-login.mjs or '
     + `auto-login.mjs. ${queued}`
-  );
+  ));
 }
 
 // Opens the chat whose name matches chatName (partial, case-insensitive) and

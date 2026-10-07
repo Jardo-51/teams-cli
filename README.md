@@ -302,9 +302,11 @@ So the commands check the session before they do anything:
   delivered (see [above](#2-post-a-message)), which catches a session that
   expired too recently for the banner to be up yet.
 
-Either way the command fails with `SessionExpiredError` and asks you to log in
-again with one of the [login scripts](#1-log-in). If the daemon was running, it is
-stopped along with it, so the login can run straight away.
+Either way the command fails and asks you to log in again with one of the
+[login scripts](#1-log-in) — with `SessionExpiredError`, unless all it has to go
+on is a message that was not delivered, which the error says instead. If the
+daemon was running, it is stopped along with it, so the login can run straight
+away.
 
 The login scripts check the same thing before they save anything, since a
 profile whose session has expired can land on the cached chat list without
