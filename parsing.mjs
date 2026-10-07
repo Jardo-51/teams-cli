@@ -179,12 +179,18 @@ export function isSessionEvidence(url, status) {
   return path.endsWith('/v1/skypetokenauth') || path.includes('/api/chatsvc/');
 }
 
-// The status Teams shows on a message it has not delivered yet. A message sent
-// from a client whose session has expired sits on "Sending..." and then on
-// "Retrying..." for as long as the page is open, while a delivered one turns to
-// "Sent" (or, later, to its read receipt) within a second or two.
-export function isPendingDelivery(status) {
-  return /^\s*(sending|retrying)\b/i.test(status ?? '');
+// Whether mid is the id of a message the chat service has accepted. Teams puts a
+// message into the pane the moment it is sent, under an id it makes up itself —
+// a long number that is no timestamp, such as 2730311426311008073 — and swaps
+// that for the server's id once the message is delivered: the send time in epoch
+// milliseconds, as every other message in the chat has. A message sent from a
+// client whose session has expired keeps the made-up one for as long as the page
+// is open. The id is what is asked rather than the status Teams shows on the
+// message ("Sending...", "Retrying...", "Sent"), because that is written in the
+// client's language and the id is not. Thirteen digits is every epoch-millisecond
+// time from 2001 to 2286.
+export function isDeliveredMessageId(mid) {
+  return /^\d{13}$/.test(mid ?? '');
 }
 
 // The ids of the messages rendered in the given document, for telling apart the
@@ -203,8 +209,10 @@ export function renderedMessageIds(doc = document) {
 // links are shortened, and an emoticon can come back as an image.
 //
 // Returns { mid, status, failed }, where status is the delivery status Teams
-// shows ("Sending...", "Sent") and failed whether it marked the message as not
-// sent; or null while no such message is rendered. Runs inside the page, like
+// shows ("Sending...", "Sent"), in the client's language and only for telling
+// the user, and failed whether it marked the message as not sent; or null while
+// no such message is rendered. Whether it was delivered is for
+// isDeliveredMessageId to say, from the id. Runs inside the page, like
 // collectRenderedMessages, so the ids it is given are a plain array.
 export function findSentMessage(knownIds, doc = document) {
   const known = new Set(knownIds);
@@ -215,10 +223,13 @@ export function findSentMessage(knownIds, doc = document) {
     // The id changes once the message is delivered — Teams swaps the id it made
     // up for the one the server gave the message — so it is looked up afresh
     // each time rather than remembered.
-    const status = doc.getElementById(`read-status-icon-${mid}`)?.getAttribute('aria-label') ?? null;
+    // The icon's being there is what marks the message as your own; its label
+    // is only read out, so a client that labels it differently, or not at all,
+    // still has its message found.
+    const icon = doc.getElementById(`read-status-icon-${mid}`);
     const failure = doc.getElementById(`failure-status-${mid}`);
-    if (status === null && !failure) continue;
-    found = { mid, status, failed: !!failure };
+    if (!icon && !failure) continue;
+    found = { mid, status: icon?.getAttribute('aria-label') ?? null, failed: !!failure };
   }
   return found;
 }

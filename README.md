@@ -96,8 +96,10 @@ nix develop .#playwright --command node post-message.mjs "Developers" "Release n
 - BE: faster search"
 ```
 
-The command only reports the message as sent once Teams marks it "Sent". A
-message Teams has not delivered within 30 seconds fails the command instead —
+The command only reports the message as sent once Teams has delivered it, which
+it reads off the id the server gives the message rather than off the "Sent" it
+shows, so it works the same whatever language Teams is in. A message Teams has
+not delivered within 30 seconds fails the command instead —
 and since Teams keeps such a message queued and sends it once it can, check the
 chat before posting it again.
 

@@ -5,7 +5,7 @@ import {
   CDP_ENDPOINT, DAEMON_ENABLED, acquireCommandLock, connectableDaemon, ensureDaemon, stopDaemon,
   touchActivity,
 } from './daemon.mjs';
-import { findSentMessage, isPendingDelivery, isSessionEvidence, renderedMessageIds } from './parsing.mjs';
+import { findSentMessage, isDeliveredMessageId, isSessionEvidence, renderedMessageIds } from './parsing.mjs';
 
 // Shared plumbing for the Teams scripts: launching a browser with a restored
 // session, opening a chat by name, walking back through its history, and the
@@ -68,8 +68,8 @@ const SESSION_POLL_MS = 500;
 // which one is up.
 const SIGN_IN_BANNER_SELECTOR = '[data-tid^="banner-notification-action-auth-banner"]';
 // How long a sent message gets to be confirmed as delivered. One that is
-// delivered turns to "Sent" within a couple of seconds; one sent with an expired
-// session never does.
+// delivered gets its id from the server, and turns to "Sent", within a couple of
+// seconds; one sent with an expired session never does.
 const DELIVERY_TIMEOUT_MS = 30_000;
 
 // How much of the viewport height each scroll step moves. Kept below 1 so
@@ -564,8 +564,10 @@ export async function waitForSignedIn(page, {
 
 // Presses Enter in the compose box and waits for Teams to confirm the message as
 // delivered. A sent message is put into the pane at once whether or not it can
-// be delivered, so its appearing proves nothing; the status Teams shows on it is
-// what does. One that is not confirmed in time is reported as such — and,
+// be delivered, so its appearing proves nothing; the id the server swaps in for
+// the one Teams made up is what does — see isDeliveredMessageId, and why it is
+// the id rather than the status shown on the message, which is in the client's
+// language. One that is not confirmed in time is reported as such — and,
 // because Teams keeps the message queued in the browser profile and sends it
 // once it can, as one that may still go out by itself.
 export async function sendAndConfirm(page) {
@@ -578,7 +580,7 @@ export async function sendAndConfirm(page) {
   let sent = null;
   for (;;) {
     sent = await page.evaluate(findSentMessage, knownIds);
-    if (sent && !sent.failed && sent.status && !isPendingDelivery(sent.status)) return;
+    if (sent && !sent.failed && isDeliveredMessageId(sent.mid)) return;
     if (await signInRequested(page)) {
       throw new SessionExpiredError(`The message was not delivered: Teams is asking to sign in again. ${queued}`);
     }
@@ -592,7 +594,9 @@ export async function sendAndConfirm(page) {
       + 'was delivered is unknown — check the chat before posting it again.'
     );
   }
-  const status = sent.failed ? 'marked as not sent' : `still "${sent.status}"`;
+  // The status is only quoted to the user, who reads the client's language too;
+  // it is not what decided that the message was not delivered.
+  const status = sent.failed ? 'marked as not sent' : `still ${sent.status ? `"${sent.status}"` : 'undelivered'}`;
   throw new Error(
     `The message was not delivered: after ${DELIVERY_TIMEOUT_MS / 1000}s Teams has it ${status}. `
     + 'The usual cause is a login that has expired — log in again with manual-login.mjs or '

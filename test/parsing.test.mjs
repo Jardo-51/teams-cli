@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   AUTHOR_GROUP_WINDOW_MS, carryForwardAuthors, collectRenderedMessages, emojiArgumentError,
-  findSentMessage, isPendingDelivery, isSessionEvidence, parseMessageIds, parsePeriod,
+  findSentMessage, isDeliveredMessageId, isSessionEvidence, parseMessageIds, parsePeriod,
   parsePostMessageArgs, parseReadChatMessagesArgs, renderedMessageIds,
 } from '../parsing.mjs';
 import { el, fakeDocument } from './fake-dom.mjs';
@@ -467,21 +467,30 @@ test('isSessionEvidence refuses what an expired session still gets answered', ()
   }
 });
 
-test('isPendingDelivery recognises the statuses of a message still on its way', () => {
-  for (const status of ['Sending...', 'Retrying...', 'sending', '  Retrying…']) {
-    assert.equal(isPendingDelivery(status), true, status);
+test('isDeliveredMessageId accepts the id the server gives a delivered message', () => {
+  // The send time in epoch milliseconds, as a live run had it.
+  for (const mid of ['1791383582085', '1785922526738', '1000000000000', '9999999999999']) {
+    assert.equal(isDeliveredMessageId(mid), true, mid);
   }
-  for (const status of ['Sent', 'Seen', 'Read by Ada Lovelace', '', null, undefined]) {
-    assert.equal(isPendingDelivery(status), false, String(status));
+});
+
+test('isDeliveredMessageId refuses the id Teams makes up for a message on its way', () => {
+  // 2730311426311008073 is what a message sent with an expired session kept, as
+  // a live run had it; the rest are not ids the server hands out.
+  for (const mid of ['2730311426311008073', '178592252673', '17859225267380', '1785922526738x', '', null, undefined]) {
+    assert.equal(isDeliveredMessageId(mid), false, String(mid));
   }
 });
 
 // A message of your own as Teams renders it, with the delivery status it puts on
-// the newest one of them.
-function ownMessage(mid, { status = null, failed = false } = {}) {
+// the newest one of them. With no status there is no status icon either, as on
+// every own message but the newest — unless icon asks for one, which is then
+// left without a label.
+function ownMessage(mid, { status = null, icon = status !== null, failed = false } = {}) {
+  const label = status === null ? {} : { 'aria-label': status };
   return chatItem([
     chatMessage(mid, [el('div', { id: `content-${mid}` }, ['ship it?'])]),
-    ...(status === null ? [] : [el('span', { id: `read-status-icon-${mid}`, 'aria-label': status, role: 'img' })]),
+    ...(icon ? [el('span', { id: `read-status-icon-${mid}`, ...label, role: 'img' })] : []),
     ...(failed ? [el('div', { id: `failure-status-${mid}` }, ['Failed to send'])] : []),
   ]);
 }
@@ -519,6 +528,13 @@ test('findSentMessage ignores a new message without a delivery status', () => {
     ownMessage('1785922526740'),
   ]);
   assert.deepEqual(findSentMessage([], doc), { mid: '1785922526738', status: 'Sending...', failed: false });
+});
+
+test('findSentMessage finds a new message whose status icon carries no label', () => {
+  // The label is in the client's language and only ever quoted; the icon being
+  // there is what marks the message as your own.
+  const doc = fakeDocument([ownMessage('1791383582085', { icon: true })]);
+  assert.deepEqual(findSentMessage([], doc), { mid: '1791383582085', status: null, failed: false });
 });
 
 test('findSentMessage reports a message marked as not sent', () => {
