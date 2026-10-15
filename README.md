@@ -73,6 +73,9 @@ afterwards, and a browser closed in that gap leaves the catalog half-filled. So
 both scripts wait for that sync to settle — saying so while they do — before
 `auto-login.mjs` closes the browser or `manual-login.mjs` tells you that you can.
 
+A saved login does not last forever. When it has expired, every command stops
+with an error saying so — see [When the login expires](#when-the-login-expires).
+
 ### 2. Post a message
 
 Posts a message into the chat whose name matches `<chat name>` (partial,
@@ -92,6 +95,13 @@ nix develop .#playwright --command node post-message.mjs "Developers" "Release n
 - FE: new chat list
 - BE: faster search"
 ```
+
+The command only reports the message as sent once Teams has delivered it, which
+it reads off the id the server gives the message rather than off the "Sent" it
+shows, so it works the same whatever language Teams is in. A message Teams has
+not delivered within 30 seconds fails the command instead —
+and since Teams keeps such a message queued and sends it once it can, check the
+chat before posting it again.
 
 A URL in the message does still become a clickable link, as it does in a message
 typed by hand. Teams shortens the label of a long one, but the link itself keeps
@@ -269,6 +279,41 @@ only six reactions at a time; past that it renders five and hides the rest behin
 a `+N` you have to open to see. Those are removed as well, so "nothing to remove"
 means the reaction is not on the message at all, not merely that it is not on
 display.
+
+## When the login expires
+
+The session the login scripts save expires eventually — how soon is up to your
+tenant. Teams does not make that obvious: it renders the chat list and the
+messages of the chats it has open out of an offline cache whether or not it is
+still signed in, so a command left to its own devices would read nothing newer
+than the last good session, and a post would sit queued in the page while the
+command reported it sent.
+
+So the commands check the session before they do anything:
+
+- A Teams page the command (or the daemon) loads itself has to reach its chat
+  service before the command goes on. A healthy client does that before its chat
+  list has even rendered, so this costs nothing; an expired one never does, and
+  the command fails once Teams raises its "We need you to sign in again" banner,
+  which takes it up to a minute.
+- The daemon's tab, which was checked that way when the daemon loaded it, is
+  checked for that banner on every command after it.
+- `post-message.mjs` additionally waits for Teams to confirm the message as
+  delivered (see [above](#2-post-a-message)), which catches a session that
+  expired too recently for the banner to be up yet.
+
+Either way the command fails and asks you to log in again with one of the
+[login scripts](#1-log-in) — with `SessionExpiredError`, unless all it has to go
+on is a message that was not delivered, which the error says instead. If the
+daemon was running, it is stopped along with it, so the login can run straight
+away.
+
+The login scripts check the same thing before they save anything, since a
+profile whose session has expired can land on the cached chat list without
+asking anyone to sign in. `manual-login.mjs` waits for you to click "Sign in" on
+the banner and finish signing in. `auto-login.mjs` cannot do that part, since Teams
+asks for it inside the client rather than on the sign-in pages it fills in, and
+fails, pointing you at `manual-login.mjs`.
 
 ## The browser daemon
 

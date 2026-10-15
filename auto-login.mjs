@@ -2,7 +2,9 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
-import { beginLogin, waitForChatList, waitForEmojiCatalog, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
+import {
+  beginLogin, waitForSignedIn, waitForEmojiCatalog, SessionExpiredError, PROFILE_DIR, AUTH_PATH,
+} from './teams.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node auto-login.mjs
@@ -241,7 +243,7 @@ try {
   );
 
   if (landing === 'chat list') {
-    console.log('The profile is still signed in — no credentials or MFA needed.');
+    console.log('The profile went straight to the chat list — checking that its session still works...');
   } else {
     if (landing === 'account tile') {
       await accountTile.click();
@@ -290,8 +292,28 @@ try {
   // Everything from here on is machine work — the human input is already done —
   // so the budget is far shorter than manual-login.mjs's, which has to cover
   // someone typing at the keyboard. Failing fast beats hanging with no output.
-  console.log('Waiting for the chat list to appear (up to 2 minutes)...');
-  await waitForChatList(page, { timeout: 120000 });
+  //
+  // Waited for until the session is confirmed, not just until the chat list is
+  // up: the list is also what a profile whose session has expired shows, out of
+  // its cache, and capturing that would save the expired session as a fresh one.
+  // Teams then asks for the sign-in from a banner in the client rather than from
+  // the sign-in pages this script fills in, so that is handed to the manual
+  // login rather than half driven here.
+  console.log('Waiting for the chat list and a working session (up to 2 minutes)...');
+  try {
+    await waitForSignedIn(page, { timeout: 120000 });
+  } catch (err) {
+    // Reworded only for the profile that went straight to the chat list, which
+    // is the one this wording describes. After a fresh sign-in it would send the
+    // user after a saved session that was never used, so there the error goes
+    // out as it came.
+    if (!(err instanceof SessionExpiredError) || landing !== 'chat list') throw err;
+    throw new Error(
+      'Teams opened on the session saved in the profile, which has expired, and asks to sign in again '
+      + 'from inside the client — which this script does not drive. Log in with manual-login.mjs instead.',
+      { cause: err },
+    );
+  }
 
   // Capture the session once (this briefly opens a page per origin to read
   // localStorage — expected, and it only happens this one time).

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   AUTHOR_GROUP_WINDOW_MS, carryForwardAuthors, collectRenderedMessages, emojiArgumentError,
-  parseMessageIds, parsePeriod, parsePostMessageArgs, parseReadChatMessagesArgs,
+  findSentMessage, isDeliveredMessageId, isSessionEvidence, parseMessageIds, parsePeriod,
+  parsePostMessageArgs, parseReadChatMessagesArgs, renderedMessageIds,
 } from '../parsing.mjs';
 import { el, fakeDocument } from './fake-dom.mjs';
 
@@ -424,4 +425,158 @@ test('collectRenderedMessages reads the global document when given none', () => 
   } finally {
     delete globalThis.document;
   }
+});
+
+test('isSessionEvidence accepts a successful answer from the chat service', () => {
+  // The requests a signed-in client makes while it boots, as a live run made them.
+  for (const url of [
+    'https://eu-api.asm.skype.com/v1/skypetokenauth',
+    'https://eu-prod.asyncgw.teams.microsoft.com/v1/skypetokenauth',
+    'https://teams.cloud.microsoft/api/chatsvc/emea/v1/threads/19%3Aabc%40thread.v2?view=msnp24Equivalent',
+    'https://teams.cloud.microsoft/api/chatsvc/emea/v1/users/ME/conversations/48%3Anotes/messages',
+  ]) {
+    assert.equal(isSessionEvidence(url, 200), true, url);
+    assert.equal(isSessionEvidence(url, 204), true, url);
+  }
+});
+
+test('isSessionEvidence refuses a failed answer from the chat service', () => {
+  // A 404 for a conversation that does not exist is still the service answering
+  // a signed-in client, but nothing here needs to lean on that; and a 401 is the
+  // very thing being looked for.
+  for (const status of [301, 401, 403, 404, 500]) {
+    assert.equal(isSessionEvidence('https://teams.cloud.microsoft/api/chatsvc/emea/v1/threads/x', status), false);
+    assert.equal(isSessionEvidence('https://eu-api.asm.skype.com/v1/skypetokenauth', status), false);
+  }
+});
+
+test('isSessionEvidence refuses what an expired session still gets answered', () => {
+  // An expired session still loads the client, its config and its telemetry,
+  // and the profile pictures cached behind a cookie — none of which needs a
+  // working token.
+  for (const url of [
+    'https://teams.microsoft.com/v2/',
+    'https://config.teams.microsoft.com/config/v1/MicrosoftTeams/1415_1.0.0.0',
+    'https://eu-teams.events.data.microsoft.com/OneCollector/1.0/',
+    'https://teams.cloud.microsoft/api/mt/part/emea-02/beta/users/x/profilepicturev2/8:orgid:x',
+    'https://login.microsoftonline.com/tenant/oauth2/v2.0/token',
+    'https://example.com/?next=/api/chatsvc/',
+    'not a url',
+  ]) {
+    assert.equal(isSessionEvidence(url, 200), false, url);
+  }
+});
+
+test('isDeliveredMessageId accepts the id the server gives a delivered message', () => {
+  // The send time in epoch milliseconds, as a live run had it.
+  for (const mid of ['1791383582085', '1785922526738', '1000000000000', '9999999999999']) {
+    assert.equal(isDeliveredMessageId(mid), true, mid);
+  }
+});
+
+test('isDeliveredMessageId refuses the id Teams makes up for a message on its way', () => {
+  // 2730311426311008073 is what a message sent with an expired session kept, as
+  // a live run had it; the rest are not ids the server hands out.
+  for (const mid of ['2730311426311008073', '178592252673', '17859225267380', '1785922526738x', '', null, undefined]) {
+    assert.equal(isDeliveredMessageId(mid), false, String(mid));
+  }
+});
+
+// A message of your own as Teams renders it, with the delivery status it puts on
+// the newest one of them. With no status there is no status icon either, as on
+// every own message but the newest — unless icon asks for one, which is then
+// left without a label.
+function ownMessage(mid, { status = null, icon = status !== null, failed = false } = {}) {
+  const label = status === null ? {} : { 'aria-label': status };
+  return chatItem([
+    chatMessage(mid, [el('div', { id: `content-${mid}` }, ['ship it?'])]),
+    ...(icon ? [el('span', { id: `read-status-icon-${mid}`, ...label, role: 'img' })] : []),
+    ...(failed ? [el('div', { id: `failure-status-${mid}` }, ['Failed to send'])] : []),
+  ]);
+}
+
+// The notBefore sendAndConfirm would ask about for the fixtures' new message: a
+// moment before the earliest of the ids they deliver it under.
+const NOT_BEFORE = 1785922526000;
+
+// findSentMessage as sendAndConfirm asks it.
+function findSent(knownIds, doc) {
+  return findSentMessage({ knownIds, notBefore: NOT_BEFORE }, doc);
+}
+
+test('renderedMessageIds lists the rendered messages that have an id', () => {
+  const doc = fakeDocument([
+    ownMessage('1785922526738'),
+    chatItem([el('div', { 'data-tid': 'chat-pane-message' }, ['no id'])]),
+    ownMessage('1785922526739', { status: 'Sent' }),
+  ]);
+  assert.deepEqual(renderedMessageIds(doc), ['1785922526738', '1785922526739']);
+});
+
+test('findSentMessage finds the new message and reads its status', () => {
+  const doc = fakeDocument([
+    ownMessage('1785922526738'),
+    ownMessage('2730311426311008073', { status: 'Retrying...' }),
+  ]);
+  assert.deepEqual(findSent(['1785922526738'], doc), {
+    mid: '2730311426311008073', status: 'Retrying...', failed: false,
+  });
+});
+
+test('findSentMessage ignores the messages that were there before', () => {
+  // The previous message of your own carries the status until the new one
+  // takes it over, and must not be read as the new one delivered.
+  const doc = fakeDocument([ownMessage('1785922526738', { status: 'Sent' })]);
+  assert.equal(findSent(['1785922526738'], doc), null);
+});
+
+test('findSentMessage ignores an older message of your own that rendered late', () => {
+  // Not rendered when the known ids were taken — a pane still filling in, or
+  // one left scrolled up — and so not among them, but stamped well before the
+  // send. Until the new message renders it still carries its "Sent", and if the
+  // Enter sent nothing it carries it for good; neither is the new one delivered.
+  const older = ownMessage('1785922400000', { status: 'Sent' });
+  assert.equal(findSent([], fakeDocument([older])), null);
+  assert.deepEqual(
+    findSent([], fakeDocument([older, ownMessage('2730311426311008073', { status: 'Sending...' })])),
+    { mid: '2730311426311008073', status: 'Sending...', failed: false },
+  );
+});
+
+test('findSentMessage ignores a new message without a delivery status', () => {
+  // Someone else's message arriving meanwhile carries none.
+  const doc = fakeDocument([
+    ownMessage('1785922526738', { status: 'Sending...' }),
+    ownMessage('1785922526740'),
+  ]);
+  assert.deepEqual(findSent([], doc), { mid: '1785922526738', status: 'Sending...', failed: false });
+});
+
+test('findSentMessage finds a new message whose status icon carries no label', () => {
+  // The label is in the client's language and only ever quoted; the icon being
+  // there is what marks the message as your own.
+  const doc = fakeDocument([ownMessage('1791383582085', { icon: true })]);
+  assert.deepEqual(findSent([], doc), { mid: '1791383582085', status: null, failed: false });
+});
+
+test('findSentMessage reports a message marked as not sent', () => {
+  const doc = fakeDocument([ownMessage('2730311426311008073', { failed: true })]);
+  assert.deepEqual(findSent([], doc), { mid: '2730311426311008073', status: null, failed: true });
+});
+
+test('findSentMessage returns nothing before the message renders', () => {
+  assert.equal(findSent(['1785922526738'], fakeDocument([ownMessage('1785922526738')])), null);
+});
+
+test('findSentMessage and renderedMessageIds survive being serialised into the page', () => {
+  // Both are sent to the page by page.evaluate(), as collectRenderedMessages is.
+  const doc = fakeDocument([
+    ownMessage('1785922526738'),
+    ownMessage('1785922526739', { status: 'Sent' }),
+  ]);
+  const ids = new Function(`return (${renderedMessageIds});`)();
+  const sent = new Function(`return (${findSentMessage});`)();
+  assert.deepEqual(ids(doc), renderedMessageIds(doc));
+  const args = { knownIds: ['1785922526738'], notBefore: NOT_BEFORE };
+  assert.deepEqual(sent(args, doc), findSentMessage(args, doc));
 });

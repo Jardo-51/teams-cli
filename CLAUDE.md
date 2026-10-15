@@ -29,3 +29,19 @@ case, but on the first message it touches.
 every module-level constant in the block at the top of the file, above the
 argument parsing, however far that is from the helper that uses it, and when
 reviewing an edit check where a newly added `const` sits relative to the run.
+
+### A chat list is not a signed-in session
+
+Teams renders its chat list and the open chat's messages out of an offline cache
+whether or not its session still works, so `waitForChatList` passing proves
+nothing about being signed in — an expired login reads as a quiet chat and posts
+as a message stuck on "Retrying...". Commands wait with `waitForSignedIn`, which
+fails with `SessionExpiredError` instead; a new command should too.
+
+To exercise that path without waiting for a login to really expire, launch the
+browser with its clock moved a couple of days ahead (`context.clock.setSystemTime`)
+and the `login.microsoftonline.com/.../oauth2/v2.0/token` endpoint answering
+`400 invalid_grant`: every cached token then reads as expired and none can be
+refreshed, which Teams treats the same way. Do it on a copy of the profile, since
+a message posted meanwhile stays queued in the profile and goes out on its next
+healthy load.

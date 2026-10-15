@@ -46,9 +46,14 @@ export const IDLE_TIMEOUT_MS = numberFromEnv('TEAMS_DAEMON_IDLE', 15, { integer:
 // guard, not a queueing policy.
 const LOCK_WAIT_MS = 30 * 60_000;
 // How long a freshly spawned daemon gets to become connectable. It covers the
-// same cold boot a command used to pay for itself, hence the same order of
-// magnitude as waitForChatList's timeout.
-const STARTUP_TIMEOUT_MS = 180_000;
+// same cold boot a command used to pay for itself, and has to outlast the
+// daemon's own wait for it: waitForSignedIn's 120s for the chat list plus its 90s
+// for a working session (SESSION_CHECK_TIMEOUT_MS in teams.mjs), with room left
+// for the browser to launch and the page to load. Shorter, and a cold boot of an
+// expired profile would have the command give up as "did not become reachable"
+// before the daemon had written why to the log the command reads back — which is
+// the one thing that wait is there to tell the user.
+const STARTUP_TIMEOUT_MS = 240_000;
 // How long a stopped daemon gets to close its browser and exit.
 const STOP_TIMEOUT_MS = 30_000;
 // How large the shared daemon log may grow before it is started over.

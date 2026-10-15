@@ -1,4 +1,4 @@
-import { beginLogin, waitForChatList, waitForEmojiCatalog, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
+import { beginLogin, waitForSignedIn, waitForEmojiCatalog, PROFILE_DIR, AUTH_PATH } from './teams.mjs';
 
 // Usage:
 //   nix develop .#playwright --command node manual-login.mjs
@@ -21,7 +21,15 @@ const { context, page, releaseLock } = await beginLogin({ headless: false });
 try {
   console.log('Log in manually in the browser window that just opened.');
   console.log('Waiting for you to finish logging in (up to 10 minutes)...');
-  await waitForChatList(page, { timeout: 600000 });
+  // Waited for until the session is confirmed, not just until the chat list is
+  // up: a profile whose session has expired shows the list out of its cache
+  // straight away, with a banner asking to sign in again, and capturing it then
+  // would save the expired session and call it a login.
+  await waitForSignedIn(page, {
+    timeout: 600000,
+    sessionTimeout: 600000,
+    onSignInRequested: () => console.log('Teams is asking to sign in again — click "Sign in" on the banner at the top of the window.'),
+  });
 
   // Capture the session once (this briefly opens a page per origin to read
   // localStorage — expected, and it only happens this one time).

@@ -1,4 +1,6 @@
-import { openTeams, waitForChatList, openChat, composerLocator, clearComposer, pasteIntoComposer } from './teams.mjs';
+import {
+  openTeams, waitForSignedIn, openChat, composerLocator, clearComposer, pasteIntoComposer, sendAndConfirm,
+} from './teams.mjs';
 import { parsePostMessageArgs } from './parsing.mjs';
 
 // Usage:
@@ -24,7 +26,7 @@ if (!chatName || !message?.trim()) {
 const { page, close } = await openTeams();
 
 try {
-  await waitForChatList(page);
+  await waitForSignedIn(page);
   // Posting never reads the message pane, so it does not wait for the pane to
   // settle at the newest end. What makes this safe is openChat confirming the
   // switch itself — the compose box of the chat being left stays visible for
@@ -46,8 +48,7 @@ try {
   if (dryRun) {
     console.log('DRY RUN: message put in the compose box but not sent.');
   } else {
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(4000);
+    await sendAndConfirm(page);
     console.log(`Sent to "${resolvedName}".`);
   }
 } finally {

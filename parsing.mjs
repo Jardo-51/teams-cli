@@ -162,3 +162,88 @@ export function collectRenderedMessages(doc = document) {
   }
   return messages;
 }
+
+// Whether a response the Teams page received proves its session is alive. The
+// client renders its chat list, and the messages of the chats it has open, out
+// of an offline cache before it has a working token for anything — and keeps
+// showing them when it never gets one — so a page that looks ready says nothing
+// about whether it is signed in. What it cannot do without a token is reach the
+// chat service: exchanging its token for the chat service's cookies
+// (skypetokenauth) and the chat service itself (chatsvc) both answer only a
+// signed-in client, and a healthy one calls both while it boots. A session that
+// has expired never gets as far as either, which is what makes a successful
+// answer from one of them the evidence to wait for.
+export function isSessionEvidence(url, status) {
+  if (status < 200 || status >= 300) return false;
+  const path = URL.parse(url)?.pathname ?? '';
+  return path.endsWith('/v1/skypetokenauth') || path.includes('/api/chatsvc/');
+}
+
+// Whether mid is the id of a message the chat service has accepted. Teams puts a
+// message into the pane the moment it is sent, under an id it makes up itself —
+// a long number that is no timestamp, such as 2730311426311008073 — and swaps
+// that for the server's id once the message is delivered: the send time in epoch
+// milliseconds, as every other message in the chat has. A message sent from a
+// client whose session has expired keeps the made-up one for as long as the page
+// is open. The id is what is asked rather than the status Teams shows on the
+// message ("Sending...", "Retrying...", "Sent"), because that is written in the
+// client's language and the id is not. Thirteen digits is every epoch-millisecond
+// time from 2001 to 2286.
+export function isDeliveredMessageId(mid) {
+  return /^\d{13}$/.test(mid ?? '');
+}
+
+// The ids of the messages rendered in the given document, for telling apart the
+// message a command has just sent from the ones that were already there.
+export function renderedMessageIds(doc = document) {
+  return [...doc.querySelectorAll('[data-tid="chat-pane-message"]')]
+    .map(msg => msg.getAttribute('data-mid'))
+    .filter(Boolean);
+}
+
+// The message just sent from this page, read off the given document: the last
+// rendered message that is not among knownIds, is not stamped before notBefore,
+// and carries a delivery status. Only your own messages carry one, and only the
+// newest of them, so a message someone else sends meanwhile is never mistaken
+// for it. Matched by that rather than by its text, because what Teams renders is
+// not what was pasted — links are shortened, and an emoticon can come back as an
+// image.
+//
+// knownIds alone does not rule out your previous message. It lists what was
+// rendered when it was taken, and on a pane still filling in after a cold load,
+// or one a previous command left scrolled up, that message may only render
+// afterwards — still carrying its "Sent" until the new one takes the status over,
+// and carrying it for good if the Enter never sent anything. So a delivered id
+// (see isDeliveredMessageId) stamped before notBefore, which the caller puts at
+// the moment it sent less a margin for clocks, is taken for a message that was
+// there before as well. A message still on its way has an id that is no
+// timestamp, and is not affected.
+//
+// Returns { mid, status, failed }, where status is the delivery status Teams
+// shows ("Sending...", "Sent"), in the client's language and only for telling
+// the user, and failed whether it marked the message as not sent; or null while
+// no such message is rendered. Whether it was delivered is for
+// isDeliveredMessageId to say, from the id. Runs inside the page, like
+// collectRenderedMessages, so what it is given is plain data and the test for a
+// delivered id is written out again here rather than called.
+export function findSentMessage({ knownIds, notBefore }, doc = document) {
+  const known = new Set(knownIds);
+  let found = null;
+  for (const msg of doc.querySelectorAll('[data-tid="chat-pane-message"]')) {
+    const mid = msg.getAttribute('data-mid');
+    if (!mid || known.has(mid)) continue;
+    if (/^\d{13}$/.test(mid) && Number(mid) < notBefore) continue;
+    // The id changes once the message is delivered — Teams swaps the id it made
+    // up for the one the server gave the message — so it is looked up afresh
+    // each time rather than remembered.
+    //
+    // The icon's being there is what marks the message as your own; its label
+    // is only read out, so a client that labels it differently, or not at all,
+    // still has its message found.
+    const icon = doc.getElementById(`read-status-icon-${mid}`);
+    const failure = doc.getElementById(`failure-status-${mid}`);
+    if (!icon && !failure) continue;
+    found = { mid, status: icon?.getAttribute('aria-label') ?? null, failed: !!failure };
+  }
+  return found;
+}

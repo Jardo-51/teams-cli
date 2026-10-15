@@ -5,6 +5,7 @@ import {
   CDP_ENDPOINT, DAEMON_ENABLED, acquireCommandLock, connectableDaemon, ensureDaemon, stopDaemon,
   touchActivity,
 } from './daemon.mjs';
+import { findSentMessage, isDeliveredMessageId, isSessionEvidence, renderedMessageIds } from './parsing.mjs';
 
 // Shared plumbing for the Teams scripts: launching a browser with a restored
 // session, opening a chat by name, walking back through its history, and the
@@ -52,6 +53,34 @@ const CHAT_SWITCH_TIMEOUT_MS = 15_000;
 // it out means Teams stopped honouring the synthetic paste, so the message was
 // never composed and there is nothing to send.
 const COMPOSER_PASTE_TIMEOUT_MS = 10_000;
+
+// How long a freshly loaded Teams gets, once its chat list is up, to show whether
+// its session is alive. A healthy client has reached its chat service before the
+// chat list even renders, so this only ever runs out on one that is not: an
+// expired session is rendered out of the offline cache all the same, and Teams
+// only raises its "sign in again" banner some 40 seconds after that. The daemon
+// waits this out on its way up, so daemon.mjs's STARTUP_TIMEOUT_MS has to stay
+// above it plus the wait for the chat list.
+const SESSION_CHECK_TIMEOUT_MS = 90_000;
+// How often that wait looks for the banner.
+const SESSION_POLL_MS = 500;
+// The button of the banner Teams raises when its session has expired ("We need
+// you to sign in again"). The other banners share the bar it sits in, so it is
+// the button's own id — which names the auth banner, in any language — that says
+// which one is up.
+const SIGN_IN_BANNER_SELECTOR = '[data-tid^="banner-notification-action-auth-banner"]';
+// How long a sent message gets to be confirmed as delivered. One that is
+// delivered gets its id from the server, and turns to "Sent", within a couple of
+// seconds; one sent with an expired session never does.
+const DELIVERY_TIMEOUT_MS = 30_000;
+// How much earlier than the moment it was sent a delivered message's id may be
+// stamped and still be taken for the message just sent. The id is the send time
+// in epoch milliseconds, but by a clock other than this machine's, so a little
+// slack is needed; anything stamped further back is an older message of your own
+// that rendered late (see findSentMessage). Five minutes is the clock skew a
+// sign-in tolerates, so a machine further off than that has trouble before it
+// ever gets to post.
+const SENT_ID_SKEW_MS = 5 * 60_000;
 
 // How much of the viewport height each scroll step moves. Kept below 1 so
 // consecutive rendered windows overlap and nothing falls between them.
@@ -122,6 +151,7 @@ export async function openTeams({
 
   const page = context.pages()[0] ?? await context.newPage();
 
+  watchSession(page);
   console.log('Opening Teams...');
   await page.goto(TEAMS_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
 
@@ -193,15 +223,51 @@ async function attachToDaemon() {
       // here would take the daemon's browser down with the first command.
       close: async () => {
         await browser.close().catch(() => {});
+        // close() is what every command's finally goes through, so this is where
+        // the login errors raised after the attach — the delivery check, the
+        // reload that repairs the emoji catalog — reach the daemon too. The
+        // error itself is on its way out of that finally, and is amended there.
+        if (loginRequest) await stopDaemonForLogin(loginRequest);
         await touchActivity();
         await release();
       },
     };
   } catch (err) {
     if (browser) await browser.close().catch(() => {});
+    if (err === loginRequest) await stopDaemonForLogin(err);
     await release();
     throw err;
   }
+}
+
+// The error this run raised to tell the user to log in again, if it raised one.
+// Kept here rather than looked for on the way out, because the daemon's close()
+// runs in the command's finally and so never sees what is being thrown through
+// it. One run raises at most one: whatever raises it ends the run.
+let loginRequest = null;
+
+// Records err as one that tells the user to log in again, so that a daemon
+// holding the expired session gets stopped for the login (see
+// stopDaemonForLogin), and returns it for throwing.
+function requestLogin(err) {
+  loginRequest = err;
+  return err;
+}
+
+// Stops the daemon after an error that tells the user to log in again, and says
+// so on the error. A daemon whose session has expired is no use to any command,
+// and the login the error asks for refuses to run while it holds the profile — so
+// it is stopped here rather than left for the user to find out about from the
+// login script. Not an externally managed browser, which is not ours to stop.
+// Called from both ways out of a command on the shared browser — the attach
+// failing, and close() — which never both happen in one run, since an attach
+// that fails returns no close().
+async function stopDaemonForLogin(err) {
+  if (CDP_ENDPOINT) return;
+  const stopped = await stopDaemon().catch(() => ({ stopped: false }));
+  err.message += stopped.stopped
+    ? ' The shared browser has been stopped, so the login can run straight away.'
+    : ' Stop the shared browser first: node teams-daemon.mjs --stop';
 }
 
 // Attaches to the daemon's browser, retrying once with a fresh daemon. A daemon
@@ -295,6 +361,11 @@ async function refreshPage(context) {
     // rather than as a confusing failure deep inside the calling script.
     console.log('The shared browser is not showing the chat list — reloading Teams...');
     await loadTeams(page);
+  } else {
+    // Showing the chat list is not being signed in: a tab whose session expired
+    // since the daemon loaded it shows the list out of its cache, and Teams says
+    // so with nothing but a banner. A reload would not bring the session back.
+    await waitForSignedIn(page);
   }
 
   // Teams keeps the open chat's draft in the compose box, and on a shared page
@@ -314,8 +385,9 @@ function showsChatList(page, { timeout = HEALTH_CHECK_TIMEOUT_MS } = {}) {
 }
 
 async function loadTeams(page) {
+  watchSession(page);
   await page.goto(TEAMS_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
-  await waitForChatList(page);
+  await waitForSignedIn(page);
 }
 
 // The compose box (a CKEditor contenteditable). Named in one place because the
@@ -444,6 +516,134 @@ async function restoreSession(context) {
 // sign-in (including MFA) when the session still has to be established.
 export async function waitForChatList(page, { timeout = 120000 } = {}) {
   await page.getByRole('treeitem').first().waitFor({ state: 'visible', timeout });
+}
+
+// Raised when the Teams session has expired, so that what the command was asked
+// to do cannot actually reach Teams. The client does not say so up front: it
+// renders the chat list and the open chat's messages out of its offline cache,
+// so without this a read finds nothing newer than the last good session and a
+// post is left queued in the page while the command reports it as sent.
+export class SessionExpiredError extends Error {
+  constructor(detail, options) {
+    super(
+      `${detail} The saved login has expired — log in again with manual-login.mjs or auto-login.mjs, `
+      + 'then run this again.',
+      options,
+    );
+    this.name = 'SessionExpiredError';
+  }
+}
+
+// The pages whose load this process has watched from the start, each with
+// whether it has proven its session alive yet. A page attached to after it
+// loaded — the daemon's, as a command sees it — is not in here, since the
+// evidence went past before anything here was listening.
+const sessionWatches = new WeakMap();
+
+// Starts collecting evidence that the page's session is alive. Has to be called
+// before the page is navigated: the evidence is a handful of responses Teams
+// gets while it boots, which nothing can ask for again afterwards.
+function watchSession(page) {
+  const watch = { confirmed: false };
+  const onResponse = (response) => {
+    if (!isSessionEvidence(response.url(), response.status())) return;
+    watch.confirmed = true;
+    page.off('response', onResponse);
+  };
+  page.on('response', onResponse);
+  sessionWatches.set(page, watch);
+}
+
+// Whether Teams is showing its "sign in again" banner — its own verdict that the
+// session has expired.
+function signInRequested(page) {
+  return page.locator(SIGN_IN_BANNER_SELECTOR).first().isVisible().catch(() => false);
+}
+
+// Waits for the chat list, and then for the page to show that its session is
+// alive — which the chat list on its own does not. Throws SessionExpiredError
+// when Teams asks to sign in again, or when a page watched from its load never
+// reaches its chat service.
+//
+// A page this process did not watch load can only be checked for the banner.
+// That is the daemon's tab, which was checked the full way when the daemon
+// loaded it; what the banner check adds is a session that expired since.
+//
+// onSignInRequested is for the login scripts, which wait for a person to sign in
+// rather than give up on the banner: it is called once when the banner is up,
+// and the wait then goes on until the session is confirmed or sessionTimeout
+// runs out.
+export async function waitForSignedIn(page, {
+  timeout = 120000, sessionTimeout = SESSION_CHECK_TIMEOUT_MS, onSignInRequested = null,
+} = {}) {
+  await waitForChatList(page, { timeout });
+  const watch = sessionWatches.get(page);
+  const deadline = Date.now() + sessionTimeout;
+  let announced = false;
+  for (;;) {
+    if (await signInRequested(page)) {
+      if (!onSignInRequested) throw requestLogin(new SessionExpiredError('Teams is asking to sign in again.'));
+      if (!announced) onSignInRequested();
+      announced = true;
+    } else if (!watch || watch.confirmed) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw requestLogin(new SessionExpiredError(
+        `Teams showed its chat list but did not reach its chat service within ${sessionTimeout / 1000}s, `
+        + 'so all it has is its offline cache.'
+      ));
+    }
+    await page.waitForTimeout(SESSION_POLL_MS);
+  }
+}
+
+// Presses Enter in the compose box and waits for Teams to confirm the message as
+// delivered. A sent message is put into the pane at once whether or not it can
+// be delivered, so its appearing proves nothing; the id the server swaps in for
+// the one Teams made up is what does — see isDeliveredMessageId, and why it is
+// the id rather than the status shown on the message, which is in the client's
+// language. One that is not confirmed in time is reported as such — and,
+// because Teams keeps the message queued in the browser profile and sends it
+// once it can, as one that may still go out by itself.
+export async function sendAndConfirm(page) {
+  const knownIds = await page.evaluate(renderedMessageIds);
+  const notBefore = Date.now() - SENT_ID_SKEW_MS;
+  await page.keyboard.press('Enter');
+
+  const queued = 'Teams keeps the message queued and sends it once the session works again, so check '
+    + 'the chat before posting it a second time.';
+  const deadline = Date.now() + DELIVERY_TIMEOUT_MS;
+  let sent = null;
+  for (;;) {
+    sent = await page.evaluate(findSentMessage, { knownIds, notBefore });
+    if (sent && !sent.failed && isDeliveredMessageId(sent.mid)) return;
+    if (await signInRequested(page)) {
+      throw requestLogin(
+        new SessionExpiredError(`The message was not delivered: Teams is asking to sign in again. ${queued}`),
+      );
+    }
+    if (sent?.failed || Date.now() >= deadline) break;
+    await page.waitForTimeout(SESSION_POLL_MS);
+  }
+
+  if (!sent) {
+    throw new Error(
+      `The sent message never appeared in the chat within ${DELIVERY_TIMEOUT_MS / 1000}s, so whether it `
+      + 'was delivered is unknown — check the chat before posting it again.'
+    );
+  }
+  // The status is only quoted to the user, who reads the client's language too;
+  // it is not what decided that the message was not delivered.
+  const status = sent.failed ? 'marked as not sent' : `still ${sent.status ? `"${sent.status}"` : 'undelivered'}`;
+  // Not a SessionExpiredError, since nothing here proves the session gone; but
+  // it asks for a login all the same, which a daemon left holding the profile
+  // would refuse.
+  throw requestLogin(new Error(
+    `The message was not delivered: after ${DELIVERY_TIMEOUT_MS / 1000}s Teams has it ${status}. `
+    + 'The usual cause is a login that has expired — log in again with manual-login.mjs or '
+    + `auto-login.mjs. ${queued}`
+  ));
 }
 
 // Opens the chat whose name matches chatName (partial, case-insensitive) and

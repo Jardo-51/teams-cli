@@ -1,6 +1,6 @@
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { openTeams, waitForChatList, PROFILE_DIR } from './teams.mjs';
+import { openTeams, waitForSignedIn, PROFILE_DIR } from './teams.mjs';
 import {
   CDP_ENDPOINT, DAEMON_PORT, IDLE_TIMEOUT_MS, LOG_PATH, clearInfo, connectableDaemon, delay,
   fetchBrowserVersion, isOurBrowser, lastActivity, readInfo, stopDaemon, touchActivity,
@@ -84,8 +84,12 @@ async function start({ headless }) {
 
   let endpoint;
   try {
-    console.log('Waiting for the chat list...');
-    await waitForChatList(page);
+    // Signed in, not merely showing a chat list: an expired session renders one
+    // out of its cache, and a daemon started on it would hand every command a
+    // page that cannot reach Teams. Failing here puts the reason in the log the
+    // command that started the daemon reads back.
+    console.log('Waiting for the chat list and a working session...');
+    await waitForSignedIn(page);
     endpoint = await readEndpoint(portFile);
   } catch (err) {
     // Nothing will ever use this browser, and leaving it up would have it hold
