@@ -2,8 +2,8 @@ import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { openTeams, waitForSignedIn, PROFILE_DIR } from './teams.mjs';
 import {
-  CDP_ENDPOINT, DAEMON_PORT, IDLE_TIMEOUT_MS, LOG_PATH, clearInfo, connectableDaemon, delay,
-  fetchBrowserVersion, isOurBrowser, lastActivity, readInfo, stopDaemon, touchActivity,
+  CDP_ENDPOINT, DAEMON_PORT, IDLE_TIMEOUT_MS, LOG_PATH, acquireCommandLock, clearInfo,
+  connectableDaemon, delay, fetchBrowserVersion, isOurBrowser, lastActivity, readInfo, stopDaemon, touchActivity,
   tryCommandLock, writeInfo,
 } from './daemon.mjs';
 
@@ -217,7 +217,17 @@ async function readEndpoint(portFile) {
 }
 
 async function stop() {
-  const result = await stopDaemon();
+  // Waits for the command lock first, so a command that is using the browser gets
+  // to finish instead of having it closed underneath it. Only here, not in
+  // stopDaemon(): its other callers run inside a command that already holds the
+  // lock, and would wait on themselves.
+  const releaseLock = await acquireCommandLock();
+  let result;
+  try {
+    result = await stopDaemon();
+  } finally {
+    await releaseLock();
+  }
   if (result.stopped) {
     console.log(`Stopped the Teams daemon (pid ${result.pid}).`);
     return;

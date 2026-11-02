@@ -350,6 +350,8 @@ Worth knowing:
   anyway.
 - **Commands run one at a time.** They share a single page, so a second command
   waits for the first to finish rather than driving the same page with it.
+  `--stop` waits the same way, so it never closes the browser under a running
+  command; press Ctrl-C to give up waiting.
 - **There is one daemon per working directory.** The profile and the daemon's
   bookkeeping are both relative paths by default, so commands run from another
   directory get their own daemon and their own profile rather than sharing these.
